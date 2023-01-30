@@ -1,0 +1,32 @@
+<html lang="en" style="box-sizing: border-box;">
+<head style="box-sizing: border-box;">
+    <meta charset="UTF-8" style="box-sizing: border-box;">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" style="box-sizing: border-box;">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" style="box-sizing: border-box;">
+    
+    <title style="box-sizing: border-box; font-family: 'Quicksand', Helvetica, Arial, sans-serif;">sylvest</title>
+</head>
+<body style="box-sizing: border-box; color: white; padding: 20px; -webkit-text-size-adjust: 100%; background: linear-gradient(270deg, rgba(115,60,230,1) 35%, rgba(158,120,237,1) 100%);">
+    <a href="https://www.thesylvest.com" style="box-sizing: border-box;text-decoration: none;">
+        <div class="navigation" style="box-sizing: border-box;text-align: center; margin-left:10px ;margin-top: 50px;margin-bottom: 50px;">
+            <h1 class="main-title" style="box-sizing: border-box;margin-top: .5rem;margin-bottom: .5rem;font-weight: 500;line-height: 1.2;font-size: calc(1.375rem + 1.5vw); color: white; font-family: 'Quicksand', Helvetica, Arial, sans-serif;"> sylvest </h1>
+        </div>
+    </a>
+    <p class="paragraph-text" style="box-sizing: border-box;color: white; padding: 1rem; font-family: Helvetica, Arial, sans-serif;">
+        Hello, <strong style="box-sizing: border-box;font-weight: bolder;"> {{ username }} </strong>. <br style="box-sizing: border-box;">
+        This mail has been sent to you in order to verify your email address. If this is not you, please ignore the message.
+        <br style="box-sizing: border-box;"><br style="box-sizing: border-box;"><br style="box-sizing: border-box;">
+        In order to verify your acount, click here:
+        <br style="box-sizing: border-box;">
+        <br style="box-sizing: border-box;">
+        <a href="{{ verification_url }}" style="box-sizing: border-box;text-decoration: none; padding: 10px; border-style: solid; border-color: #fff; color: #fff; border-radius: 50px; margin: 10px;"> Verify Account </a>
+        <br style="box-sizing: border-box;">
+        <br style="box-sizing: border-box;">
+        If the button doesn't work click, here instead: {{ verification_url }}
+        <br style="box-sizing: border-box;">
+        <br style="box-sizing: border-box;">
+        Thank you and regards; <br style="box-sizing: border-box;">
+        Sylvest team
+    </p>
+</body>
+</html>

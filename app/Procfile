@@ -1,0 +1,2 @@
+web: daphne -b 0.0.0.0 -p $PORT sylvest_django.asgi:application;
+#web: python manage.py runserver 0.0.0.0:\$PORT

@@ -1,0 +1,74 @@
+{% load static %}
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{% static 'clientAuth/style.css' %}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.1/dist/css/bootstrap.min.css" 
+    rel="stylesheet" integrity="sha384-iYQeCzEYFbKjA/T2uDLTpkwGzCiq6soy8tYaI1GyVh/UjpbCx/TYkiZhlZB6+fzT" crossorigin="anonymous">
+    <title>sylvest</title>
+</head>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Lato:wght@300&family=Quicksand:wght@500&display=swap');
+
+    .main-title {
+        font-family: 'Quicksand';
+        color: #fff;
+    }
+
+    .logo {
+        width: 100px;
+        height: 100px;
+    }
+
+    .navigation {
+        text-align: center;
+        margin-left: auto;
+        margin-right: auto;
+        margin-top: 50px;
+        margin-bottom: 50px;
+
+    }
+
+    .status {
+        text-align: center;
+        font-family: 'Quicksand';
+        color: #fff;
+        font-size: large;
+    }
+
+    .paragraph-text {
+        color: #fff;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 100px;
+    }
+
+    body {
+        background: rgb(115,60,230);
+        background: linear-gradient(270deg, rgba(115,60,230,1) 35%, rgba(158,120,237,1) 100%);
+    }
+
+    a {
+        text-decoration: none;
+    }
+</style>
+<body>
+    <a href="https://www.thesylvest.com">
+        <div class="navigation">
+            <!-- <img class="logo"
+            src="https://static.wixstatic.com/media/8a9e36_c1f0f7268b684fc3a170f1f6da92c2e7~mv2.png/v1/fill/w_214,h_214,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/Sylvest_icon_21.png" alt="">
+             -->
+            <h1 class="main-title"> sylvest </h1>
+        </div>
+    </a>
+    <h2 class="status">
+        {{ status }}
+    </h2>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.1/dist/js/bootstrap.bundle.min.js" 
+    integrity="sha384-u1OknCvxWvY5kfmNBILK2hRnQC3Pr17a+RTT6rIHI7NnikvbZlHgTPOOmMi466C8" 
+    crossorigin="anonymous"></script>
+</body>
+</html>

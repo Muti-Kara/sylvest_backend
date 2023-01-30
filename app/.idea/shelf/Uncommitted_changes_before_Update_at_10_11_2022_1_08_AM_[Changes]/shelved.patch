@@ -1,0 +1,1593 @@
+Index: chat/serializers.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>from rest_framework import serializers\r\nfrom django.contrib.auth.models import User\r\nfrom django.db.models import QuerySet\r\n\r\nfrom .models import Message, Room, Streak\r\nfrom api.helper import get_profile_image\r\nfrom api.serializers import Base64FileField, Base64ImageField\r\n\r\n\r\nclass MessageSerializer(serializers.ModelSerializer):\r\n    author_details = serializers.SerializerMethodField()\r\n    community_details = serializers.SerializerMethodField()\r\n    post_details = serializers.SerializerMethodField()\r\n    image_details = serializers.SerializerMethodField()\r\n    file_details = serializers.SerializerMethodField()\r\n    image = Base64ImageField(max_length=None, use_url=True, allow_null=True)\r\n    file = Base64FileField(max_length=None, use_url=True, allow_null=True)\r\n\r\n    @staticmethod\r\n    def get_author_details(obj: Message) -> dict:\r\n        return {\r\n            'username': obj.author.username,\r\n            'image': get_profile_image(obj.author),\r\n            'id': obj.id\r\n        }\r\n\r\n    @staticmethod\r\n    def get_post_details(obj: Message) -> dict | None:\r\n        if not obj.post:\r\n            return None\r\n        return obj.post.to_dict()\r\n\r\n    @staticmethod\r\n    def get_community_details(obj: Message) -> dict | None:\r\n        if not obj.community:\r\n            return None\r\n        return obj.community.to_dict()\r\n\r\n    @staticmethod\r\n    def get_image_details(obj: Message) -> dict[str: str | int] | None:\r\n        if not obj.image:\r\n            return None\r\n        width, height = obj.image.width, obj.image.height\r\n        byte_size = str(obj.image.size)\r\n        return {\r\n            'url': obj.image.url,\r\n            'width': width,\r\n            'height': height,\r\n            'size': byte_size,\r\n            'name': obj.image.name,\r\n        }\r\n\r\n    @staticmethod\r\n    def get_file_details(obj: Message) -> dict[str: str | int] | None:\r\n        if not obj.file:\r\n            return None\r\n        return {\r\n            'url': obj.file.url,\r\n            'size': obj.file.size,\r\n            'name': obj.file.name.split('/')[-1]\r\n        }\r\n\r\n    class Meta:\r\n        model = Message\r\n        fields = ('id', 'author_details', 'content',\r\n                  'room', 'seen', 'post_details', 'type',\r\n                  'community_details', 'image_details',\r\n                  'post', 'community', 'image', 'file',\r\n                  'file_details', 'saved', 'timestamp')\r\n\r\n\r\nclass StreakSerializer(serializers.ModelSerializer):\r\n    multiplier = serializers.SerializerMethodField()\r\n    \r\n    @staticmethod\r\n    def get_multiplier(obj: Streak) -> int:\r\n        return (obj.final_date - obj.start_date).days\r\n    \r\n    class Meta:\r\n        model = Streak\r\n        fields = ('id', 'room', 'multiplier', 'collected_xp', 'start_date', 'final_date')\r\n\r\n\r\nclass RoomSerializer(serializers.ModelSerializer):\r\n    admin_details = serializers.SerializerMethodField()\r\n    room_details = serializers.SerializerMethodField()\r\n    message_details = serializers.SerializerMethodField()\r\n    allowed_actions = serializers.SerializerMethodField()\r\n    streak_details = serializers.SerializerMethodField()\r\n\r\n    @staticmethod\r\n    def get_admin_details(obj: Room) -> dict | None:\r\n        if obj.admin is None:\r\n            return None\r\n        return {\r\n            'id': obj.admin.id,\r\n            'username': obj.admin.username\r\n        }\r\n\r\n    @staticmethod\r\n    def __title(user: User, obj: Room, target: User = None) -> str:\r\n        if user.is_anonymous or obj.type == Room.Type.GROUP:\r\n            return obj.title\r\n        return target.username\r\n\r\n    @staticmethod\r\n    def __image(obj: Room, target: User) -> str | None:\r\n        if obj.type == Room.Type.GROUP:\r\n            image = obj.image\r\n        else:\r\n            image = target.profile.image\r\n        if not image:\r\n            return None\r\n        return image.url\r\n\r\n    @staticmethod\r\n    def __target(obj: Room, user: User) -> User:\r\n        return obj.participants.exclude(id=user.id).first()\r\n\r\n    @staticmethod\r\n    def get_streak_details(obj: Room) -> dict:\r\n        return StreakSerializer(obj.streak).data\r\n\r\n    def get_message_details(self, obj: Room) -> dict:\r\n        from .manager import get_unread_messages\r\n\r\n        user: User = self.context['request'].user\r\n        messages: QuerySet[Message] = get_unread_messages(obj, user)\r\n        return {\r\n            'count': messages.count(),\r\n            'last_message': MessageSerializer(messages.first()).data if messages.first() else None\r\n        }\r\n\r\n    def get_allowed_actions(self, obj: Room) -> list[str]:\r\n        user: User = self.context['request'].user\r\n        if obj.type == Room.Type.PEER2PEER or user.is_anonymous:\r\n            return []\r\n        elif user != obj.admin:\r\n            return ['leave']\r\n        else:\r\n            return ['leave', 'remove', 'add', 'edit']\r\n\r\n    def get_room_details(self, obj: Room) -> dict[str: str | None]:\r\n        user: User = self.context['request'].user\r\n        target: User = self.__target(obj, user) if obj.type == Room.Type.PEER2PEER else None\r\n        return {\r\n            'title': self.__title(user, obj, target),\r\n            'image': self.__image(obj, target)\r\n        }\r\n\r\n    class Meta:\r\n        model = Room\r\n        fields = ('id', 'type', 'admin_details', 'image',\r\n                  'room_details', 'message_details',\r\n                  'allowed_actions', 'description',\r\n                  'streak_details')\r\n\r\n\r\nclass SmallRoomSerializer(serializers.ModelSerializer):\r\n    title = serializers.SerializerMethodField()\r\n    image = serializers.SerializerMethodField()\r\n    room_type = serializers.SerializerMethodField()\r\n    \r\n    def get_image(self, obj: Room) -> str | None:\r\n        user: User = self.context['request'].user\r\n        if obj.type == Room.Type.GROUP:\r\n            image = obj.image\r\n        else:\r\n            image = obj.participants.exclude(id=user.id).first().profile.image\r\n        if not image:\r\n            return None\r\n        return image.url\r\n    \r\n    \r\n    def get_title(self, obj: Room) -> str:\r\n        user: User = self.context['request'].user\r\n        if user.is_anonymous or obj.type == Room.Type.GROUP:\r\n            return obj.title\r\n        return obj.participants.exclude(id=user.id).first().username\r\n    \r\n    def get_room_type(self, obj: Room) -> str:\r\n        return obj.type;\r\n    \r\n    class Meta:\r\n        model = Room\r\n        fields = 'title', 'image', 'id', 'room_type'
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/chat/serializers.py b/chat/serializers.py
+--- a/chat/serializers.py	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/chat/serializers.py	(date 1665439448598)
+@@ -71,11 +71,11 @@
+ 
+ class StreakSerializer(serializers.ModelSerializer):
+     multiplier = serializers.SerializerMethodField()
+-    
++
+     @staticmethod
+     def get_multiplier(obj: Streak) -> int:
+         return (obj.final_date - obj.start_date).days
+-    
++
+     class Meta:
+         model = Streak
+         fields = ('id', 'room', 'multiplier', 'collected_xp', 'start_date', 'final_date')
+@@ -160,7 +160,7 @@
+     title = serializers.SerializerMethodField()
+     image = serializers.SerializerMethodField()
+     room_type = serializers.SerializerMethodField()
+-    
++
+     def get_image(self, obj: Room) -> str | None:
+         user: User = self.context['request'].user
+         if obj.type == Room.Type.GROUP:
+@@ -170,17 +170,17 @@
+         if not image:
+             return None
+         return image.url
+-    
+-    
++
+     def get_title(self, obj: Room) -> str:
+         user: User = self.context['request'].user
+         if user.is_anonymous or obj.type == Room.Type.GROUP:
+             return obj.title
+         return obj.participants.exclude(id=user.id).first().username
+-    
+-    def get_room_type(self, obj: Room) -> str:
+-        return obj.type;
+-    
++
++    @staticmethod
++    def get_room_type(obj: Room) -> str:
++        return obj.type
++
+     class Meta:
+         model = Room
+-        fields = 'title', 'image', 'id', 'room_type'
+\ No newline at end of file
++        fields = 'title', 'image', 'id', 'room_type'
+Index: subjects/models.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>from django.shortcuts import get_object_or_404\r\nfrom django.contrib.auth.models import User\r\nfrom django.db import models\r\nfrom django.db.models import QuerySet, Q\r\nfrom django.core.files.base import ContentFile\r\nfrom api.dynamic_links import DynamicLinkManager\r\n\r\nfrom recommender.models import Follow, RoledUser\r\nfrom api.models import Notification\r\nfrom blog.models import MasterPost, Tag\r\nfrom api.helper import compress_image, process_base64_image\r\n\r\n\r\nclass Subject(models.Model):\r\n    class Meta:\r\n        abstract = True\r\n\r\n    title = models.CharField(max_length=100, unique=True)\r\n    info = models.JSONField(null=True, blank=True)\r\n    about = models.TextField(max_length=500, null=True, blank=True)\r\n\r\n    image = models.ImageField(\r\n        upload_to=\"public/subject_pics\",\r\n        null=True, blank=True\r\n    )\r\n    banner = models.ImageField(\r\n        upload_to=\"public/subject_banners\",\r\n        null=True, blank=True\r\n    )\r\n\r\n    def __str__(self):\r\n        return self.title\r\n\r\n    def save(self, *args, **kwargs):\r\n        super(Subject, self).save(*args, **kwargs)\r\n\r\n        if self.image is not None:\r\n            compress_image(self.image, down_size=True, down_size_width=300)\r\n        if self.banner is not None:\r\n            compress_image(self.banner)\r\n\r\n\r\nclass Profile(Subject):\r\n    user = models.OneToOneField(User, on_delete=models.CASCADE)\r\n    interests = models.ManyToManyField(\r\n        Tag, related_name=\"user_interests\", blank=True)\r\n    ip = models.GenericIPAddressField(blank=True, null=True)\r\n    region = models.CharField(max_length=50, blank=True)\r\n\r\n    gender = models.CharField(max_length=50, null=True, blank=True)\r\n    address = models.TextField(max_length=500, null=True, blank=True)\r\n\r\n    is_private = models.BooleanField(default=False)\r\n\r\n    def __str__(self) -> str:\r\n        return self.user.username\r\n\r\n    def get_interests(self) -> QuerySet[Tag]:\r\n        return self.interests.all()\r\n\r\n    def get_followers(self) -> QuerySet[Follow]:\r\n        return Follow.objects.filter(\r\n            followee=self.user,\r\n            follow_status=Follow.Status.FOLLOWING\r\n        )\r\n\r\n    def is_follower(self, user: User) -> bool:\r\n        try:\r\n            Follow.objects.get(\r\n                followee=self.user,\r\n                follower=user,\r\n                follow_status=Follow.Status.FOLLOWING\r\n            )\r\n            return True\r\n        except:\r\n            return False\r\n\r\n    def get_following(self) -> QuerySet[Follow]:\r\n        return Follow.objects.filter(\r\n            follower=self.user,\r\n            follow_status=Follow.Status.FOLLOWING\r\n        )\r\n\r\n    def is_following(self, user: User) -> bool:\r\n        try:\r\n            Follow.objects.get(\r\n                follower=self.user,\r\n                followee=user,\r\n                follow_status=Follow.Status.FOLLOWING\r\n            )\r\n            return True\r\n        except:\r\n            return False\r\n\r\n    def get_joined_communities_roles(self) -> QuerySet[RoledUser]:\r\n        return RoledUser.objects.filter(user=self.user)\\\r\n            .exclude(privilege=RoledUser.Roles.not_member)\r\n\r\n    def __default_recommendation(self, slice_index: int = 30) -> list[User]:\r\n        follows: QuerySet[Follow] = Follow.objects.filter(\r\n            Q(follower=self.user) | Q(followee=self.user),\r\n            follow_status=Follow.Status.FOLLOWING\r\n        )[:slice_index]\r\n        return [\r\n            follow.follower if follow.follower != self.user\r\n            else follow.followee for follow in follows\r\n        ]\r\n\r\n    def friend_recommendation(self) -> list[User]:\r\n        from recommender.recommend import Recommender\r\n\r\n        try:\r\n            recommendations: list = Recommender().get_recommended_users(self.user)\r\n            if not recommendations:\r\n                return self.__default_recommendation()\r\n            if self.user.id in recommendations:\r\n                recommendations.remove(self.user.id)\r\n            result: QuerySet[User] = User.objects.filter(\r\n                id__in=recommendations)\r\n            return list(result)\r\n        except Exception as e:\r\n            print(e.with_traceback)\r\n            return self.__default_recommendation()\r\n\r\n    def get_notifications(self) -> list[dict]:\r\n        result = []\r\n        for notification in Notification.objects.filter(\r\n                user=self.user, show_on_profile=True).order_by('-id'):\r\n            notification.read = True\r\n            notification.save()\r\n            result.append({\r\n                'data': notification.data,\r\n                'time': notification.date_created\r\n            })\r\n        return result\r\n\r\n    def is_profile_notifications_unread(self) -> bool:\r\n        notifications: list[Notification] = Notification.objects.filter(\r\n            user=self.user, show_on_profile=True)\r\n        for notification in notifications:\r\n            if not notification.read:\r\n                return True\r\n        return False\r\n\r\n    def is_message_notifications_unread(self) -> bool:\r\n        notifications: list[Notification] = Notification.objects.filter(\r\n            user=self.user, show_on_profile=False)\r\n        for notification in notifications:\r\n            if not notification.read:\r\n                return True\r\n        return False\r\n\r\n    def get_link(self) -> str:\r\n        manager = DynamicLinkManager()\r\n        return manager.create_link(item_id=self.id, link_type=\"user\")\r\n\r\n    def save(self, *args, **kwargs):\r\n        if self.title == \"\":\r\n            self.title = self.user.username\r\n        super(Profile, self).save(*args, **kwargs)\r\n\r\n\r\nclass Community(Subject):\r\n    master_community = models.ForeignKey(\r\n        \"self\",\r\n        on_delete=models.DO_NOTHING,\r\n        null=True, blank=True\r\n    )\r\n    short_description = models.CharField(max_length=200)\r\n\r\n    def get_members(self) -> QuerySet[RoledUser]:\r\n        return RoledUser.objects.exclude(privilege=0).filter(community=self)\r\n\r\n    def get_founder(self) -> User:\r\n        return None\r\n        # return self.get_members().order_by('id').first().user\r\n\r\n    def get_posts(self, *, cls: type = MasterPost) -> QuerySet[MasterPost]:\r\n        posts = cls.objects.filter(community=self)\r\n        if self.master_community is not None:\r\n            posts = posts | self.master_community.get_posts()\r\n        return posts\r\n\r\n    def get_sub_communities(self) -> QuerySet['Community']:\r\n        return Community.objects.filter(master_community=self)\r\n\r\n    def is_joined(self, user: User) -> bool:\r\n        from recommender.models import RoledUser\r\n\r\n        try:\r\n            RoledUser.objects.get(\r\n                user=user,\r\n                community=self,\r\n                privilege__gte=RoledUser.Roles.member,\r\n                is_banned=False\r\n            )\r\n            return True\r\n        except:\r\n            return False\r\n\r\n    def edit(self, updated_attributes: dict) -> None:\r\n        updated_about: str = updated_attributes.get('about', self.about)\r\n        updated_description: str = updated_attributes.get(\r\n            'description', self.short_description)\r\n        updated_info: dict = updated_attributes.get('info', self.info)\r\n        updated_image: ContentFile | str = updated_attributes.get(\r\n            'image', self.image)\r\n        updated_banner: ContentFile | str = updated_attributes.get(\r\n            'banner', self.banner)\r\n\r\n        if type(updated_image) == str:\r\n            updated_image = process_base64_image(updated_image)\r\n        if type(updated_banner) == str:\r\n            updated_banner = process_base64_image(updated_banner)\r\n\r\n        self.image = updated_image\r\n        self.banner = updated_banner\r\n        self.short_description = updated_description\r\n        self.about = updated_about\r\n        self.info = updated_info\r\n        self.save()\r\n\r\n    def change_role(self, other_user_id: int, updated_role: str) -> None:\r\n        other_user: RoledUser = get_object_or_404(\r\n            RoledUser, user__id=other_user_id, community=self)\r\n        other_user.set_role(updated_role)\r\n\r\n    def ban_user(self, other_user_id: int) -> None:\r\n        other_user: RoledUser = get_object_or_404(\r\n            RoledUser, user__id=other_user_id, community=self)\r\n        other_user.ban()\r\n\r\n    @staticmethod\r\n    def remove_post(post_id: int) -> None:\r\n        post: MasterPost = get_object_or_404(MasterPost, id=post_id)\r\n        post.community = None\r\n        post.save()\r\n\r\n    def get_link(self) -> str:\r\n        manager = DynamicLinkManager()\r\n\r\n        return manager.create_link(item_id=self.id, link_type=\"community\")\r\n\r\n    def to_dict(self) -> dict[str: str | int] | None:\r\n        return {\r\n            'title': self.title,\r\n            'id': self.id,\r\n            'members': self.get_members().count(),\r\n            'sub_communities': self.get_sub_communities().count(),\r\n            'posts': self.get_posts().count(),\r\n            'description': self.short_description,\r\n            'image': self.image.url\r\n        }\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/subjects/models.py b/subjects/models.py
+--- a/subjects/models.py	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/subjects/models.py	(date 1665436719098)
+@@ -110,11 +110,12 @@
+         from recommender.recommend import Recommender
+ 
+         try:
+-            recommendations: list = Recommender().get_recommended_users(self.user)
++            recommendations: QuerySet = Recommender()\
++                .get_recommended_users(self.user)
+             if not recommendations:
+                 return self.__default_recommendation()
+-            if self.user.id in recommendations:
+-                recommendations.remove(self.user.id)
++            # if self.user.id in recommendations:
++            #     recommendations.remove(self.user.id)
+             result: QuerySet[User] = User.objects.filter(
+                 id__in=recommendations)
+             return list(result)
+@@ -125,7 +126,7 @@
+     def get_notifications(self) -> list[dict]:
+         result = []
+         for notification in Notification.objects.filter(
+-                user=self.user, show_on_profile=True).order_by('-id'):
++                user=self.user, show_on_profile=True).order_by('-id')[:50]:
+             notification.read = True
+             notification.save()
+             result.append({
+@@ -172,8 +173,7 @@
+         return RoledUser.objects.exclude(privilege=0).filter(community=self)
+ 
+     def get_founder(self) -> User:
+-        return None
+-        # return self.get_members().order_by('id').first().user
++        return self.get_members().order_by('id').first().user
+ 
+     def get_posts(self, *, cls: type = MasterPost) -> QuerySet[MasterPost]:
+         posts = cls.objects.filter(community=self)
+Index: chain/level.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>from web3.contract import Contract\r\nfrom decimal import Decimal\r\nfrom web3 import Web3\r\nfrom collections import deque\r\nimport configuration\r\nimport json\r\n\r\nwith open(\"./Token.json\", 'r') as file:\r\n    chain_file = json.loads(file.read())\r\n\r\nCHAIN_ABI = chain_file['abi']\r\nCHAIN_URL = configuration.CHAIN_URL\r\nCHAIN_ID = int(configuration.CHAIN_ID)\r\nMASTER_ADDRESS = configuration.MASTER_ADDRESS\r\nMASTER_KEY = configuration.MASTER_KEY\r\nCHAIN_ADDRESS = configuration.TOKEN_ADDRESS\r\n\r\n\r\nclass Singleton(type):\r\n    _instances = {}\r\n\r\n    def __call__(cls, *args, **kwargs):\r\n        if cls not in cls._instances:\r\n            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)\r\n        return cls._instances[cls]\r\n\r\n\r\nclass ChainAttributes:\r\n    connected: bool | None = False\r\n    balance: Decimal | None = None\r\n    address: str | None = None\r\n\r\n    def __init__(self, connected: bool, address: str, balance: Decimal | None = None) -> None:\r\n        self.connected = connected\r\n        self.balance = balance\r\n        self.address = address\r\n\r\n    def __dict__(self):\r\n        return {\r\n            'connected': self.connected,\r\n            'balance': f\"{self.balance:.6f}\" if self.balance is not None else None,\r\n        }\r\n\r\n\r\nclass ChainManager(metaclass=Singleton):\r\n    class Functions:\r\n        ON_TRANSACTION_VERIFIED = \"verifiedTransfer\"\r\n        SEND_TOKEN = \"sendToken\"\r\n        MINT = \"mint\"\r\n        BURN = \"burn\"\r\n        NEW_WALLET = \"newWallet\"\r\n        ANNOUNCE_OWNERSHIP = \"announceOwnership\"\r\n        RENOUNCE_OWNERSHIP = \"renounceOwnership\"\r\n        BALANCE_OF = \"balanceOf\"\r\n\r\n    def __init__(self):\r\n        self.w3 = Web3(Web3.HTTPProvider(CHAIN_URL))\r\n        self.contract: Contract = self.w3.eth.contract(address=CHAIN_ADDRESS, abi=CHAIN_ABI)\r\n        self.filter = self.contract.events.TransferRequest.createFilter(fromBlock=\"latest\")\r\n        self.latest_event_hash = None\r\n\r\n    def chain_attributes(self, address: str | None) -> ChainAttributes:\r\n        attributes: ChainAttributes = ChainAttributes(\r\n            connected=self.w3.isConnected(),\r\n            address=address\r\n        )\r\n        if not address:\r\n            return attributes\r\n        if attributes.connected:\r\n            attributes.balance = Decimal(self.call(\"balanceOf\", address))\r\n        return attributes\r\n\r\n    def exp_decimals(self) -> int:\r\n        return pow(10, self.call(\"decimals\"))\r\n\r\n    def get_transfer_logs(self):\r\n        logs = self.TransferFilter.get_new_entries()\r\n        return [transfer_requests[\"args\"] for transfer_requests in logs]\r\n\r\n    def send(self, func_name: str, *args):\r\n        NonceManager().add_txn(func_name, *args)\r\n\r\n    def sign(self, txn: dict):\r\n        for arg in txn[\"args\"]:\r\n            if type(arg) == int and arg == 0:\r\n                return\r\n        try:\r\n            nonce = self.w3.eth.getTransactionCount(MASTER_ADDRESS)\r\n        except Exception as e:\r\n            print(e)\r\n            return\r\n        transaction = self.Token.functions[txn[\"func_name\"]](*txn[\"args\"]).buildTransaction({\r\n            \"chainId\": CHAIN_ID,\r\n            \"gasPrice\": self.w3.eth.gasPrice,\r\n            \"from\": MASTER_ADDRESS,\r\n            \"nonce\": nonce\r\n        })\r\n        signed_tx = self.w3.eth.account.sign_transaction(\r\n            transaction, private_key=MASTER_KEY\r\n        )\r\n        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)\r\n        tx_receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, poll_latency=0.5)\r\n        print(f\"Gas been used: {tx_receipt.gasUsed}\")\r\n\r\n    def call(self, func_name: str, *args):\r\n        return self.Token.functions[func_name](*args).call()\r\n\r\n\r\nclass NonceManager(metaclass=Singleton):\r\n    txn_queue: deque[dict] = deque()\r\n    signing: bool = False\r\n\r\n    def add_txn(self, func_name: str, *args):\r\n        self.txn_queue.append({\r\n            \"func_name\": func_name,\r\n            \"args\": args,\r\n            \"error\": 0\r\n        })\r\n\r\n    def has_next(self) -> bool:\r\n        if not self.txn_queue:\r\n            self.signing = False\r\n        return self.txn_queue\r\n\r\n    def start_signing(self):\r\n        self.signing = True\r\n        while self.has_next():\r\n            txn = self.txn_queue[0]\r\n            print(str(txn))\r\n            try:\r\n                ChainManager().sign(self.txn_queue.popleft())\r\n            except Exception as e:\r\n                print(e)\r\n                if txn[\"error\"] == 10:\r\n                    pass\r\n                else:\r\n                    txn[\"error\"] = txn[\"error\"] + 1\r\n                    self.txn_queue.append(txn)\r\n\r\n    def is_signing(self) -> bool:\r\n        return self.signing\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/chain/level.py b/chain/level.py
+--- a/chain/level.py	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/chain/level.py	(date 1665423600570)
+@@ -4,8 +4,11 @@
+ from collections import deque
+ import configuration
+ import json
++from os.path import join
+ 
+-with open("./Token.json", 'r') as file:
++from sylvest_django.settings import BASE_DIR
++
++with open(join(BASE_DIR, "Token.json"), 'r') as file:
+     chain_file = json.loads(file.read())
+ 
+ CHAIN_ABI = chain_file['abi']
+Index: subjects/views.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>from django.db.models import QuerySet\r\nfrom rest_framework.decorators import action\r\nfrom rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet\r\nfrom rest_framework.response import Response\r\nfrom rest_framework.request import Request\r\nfrom rest_framework import filters\r\nfrom rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly\r\nfrom django.contrib.auth.models import User\r\nfrom django.shortcuts import get_object_or_404\r\n\r\nfrom blog.models import Tag\r\nfrom chain.level import ChainManager\r\nfrom recommender.serializers import RoledUserSerializer\r\nfrom subjects.pagination import CommunityPagination\r\nfrom recommender.models import RoledUser, Follow\r\nfrom api.helper import paginate_queryset\r\nfrom api.permissions import IsUserOrReadOnly, PublicOrIsInFollowers, IsChainVerified\r\nfrom subjects.serializers import (\r\n    UserSerializer,\r\n    ProfileSerializer,\r\n    CommunitySerializer,\r\n    SmallProfileSerializer, SmallCommunitySerializer\r\n)\r\nfrom subjects.models import Community, Profile\r\nfrom chat.manager import get_or_create_group\r\n\r\n\r\nclass UserViewSet(ReadOnlyModelViewSet):\r\n    queryset = User.objects.all()\r\n    serializer_class = UserSerializer\r\n\r\n\r\nclass ProfileViewSet(ModelViewSet):\r\n    queryset = Profile.objects.all()\r\n    serializer_class = ProfileSerializer\r\n    permission_classes = [IsAuthenticatedOrReadOnly, IsUserOrReadOnly]\r\n    filter_backends = [filters.SearchFilter]\r\n    search_fields = ['user__username', 'title', 'region']\r\n\r\n    PAGINATION_LIMIT = 20\r\n\r\n    def retrieve(self, request: Request, pk: int = None, *args, **kwargs) -> Response:\r\n        user: User = get_object_or_404(User, id=pk)\r\n        return Response(\r\n            ProfileSerializer(user.profile, context={'request': request}).data\r\n        )\r\n\r\n    @action(detail=True, methods=['GET'], permission_classes=[PublicOrIsInFollowers])\r\n    def followers(self, request: Request, pk: int = None) -> Response:\r\n        profile: Profile = get_object_or_404(User, id=pk).profile\r\n        self.check_object_permissions(request, profile)\r\n        page_index: int = int(request.query_params.get(\"page\", 1))\r\n        followers: QuerySet[Follow] = profile.get_followers()\r\n        page, paginator = paginate_queryset(\r\n            followers,\r\n            limit=self.PAGINATION_LIMIT,\r\n            index=page_index\r\n        )\r\n        return Response({\r\n            'page_count': paginator.num_pages,\r\n            'count': paginator.count,\r\n            'has_next': page.has_next(),\r\n            'results': [\r\n                SmallProfileSerializer(follow.follower).data\r\n                for follow in page.object_list\r\n            ]\r\n        })\r\n\r\n    @action(detail=True, methods=['GET'], permission_classes=[PublicOrIsInFollowers])\r\n    def following(self, request: Request, pk: int = None) -> Response:\r\n        profile: Profile = get_object_or_404(User, id=pk).profile\r\n        self.check_object_permissions(request, profile)\r\n        page_index: int = int(request.query_params.get(\"page\", 1))\r\n        following: QuerySet[Follow] = profile.get_following()\r\n        page, paginator = paginate_queryset(\r\n            following,\r\n            limit=self.PAGINATION_LIMIT,\r\n            index=page_index\r\n        )\r\n        return Response({\r\n            'page_count': paginator.num_pages,\r\n            'count': paginator.count,\r\n            'has_next': page.has_next(),\r\n            'results': [\r\n                SmallProfileSerializer(follow.followee).data\r\n                for follow in page.object_list\r\n            ]\r\n        })\r\n\r\n    @action(detail=True, methods=['GET'], permission_classes=[PublicOrIsInFollowers])\r\n    def communities(self, request: Request, pk: int = None) -> Response:\r\n        profile: Profile = get_object_or_404(User, id=pk).profile\r\n        self.check_object_permissions(request, profile)\r\n        page_index: int = int(request.query_params.get(\"page\", 1))\r\n        query_all: int = int(request.query_params.get(\"all\", 0))\r\n        roles: QuerySet[RoledUser] = profile.get_joined_communities_roles()\r\n        page, paginator = paginate_queryset(\r\n            roles,\r\n            limit=self.PAGINATION_LIMIT,\r\n            index=page_index\r\n        )\r\n        return Response({\r\n            'page_count': paginator.num_pages if not query_all else 1,\r\n            'count': paginator.count,\r\n            'has_next': page.has_next() if not query_all else False,\r\n            'results': [\r\n                SmallCommunitySerializer(role.community).data\r\n                for role in page.object_list\r\n            ] if not query_all else [\r\n                SmallCommunitySerializer(role.community).data\r\n                for role in roles\r\n            ]\r\n        })\r\n\r\n    @action(detail=False, methods=['PATCH'], permission_classes=[IsAuthenticated])\r\n    def edit_interests(self, request: Request) -> Response:\r\n        self.check_permissions(request)\r\n        profile: Profile = request.user.profile\r\n        interests: list[str] | None = request.data.get(\"interests\")\r\n        if not interests:\r\n            return Response(status=405)\r\n\r\n        profile_tags: QuerySet[Tag] = profile.interests.all()\r\n\r\n        for tag in profile_tags:\r\n            if tag.title not in interests:\r\n                profile.interests.remove(tag)\r\n\r\n        for interest in interests:\r\n            if not profile_tags.filter(title=interest).exists():\r\n                tag, created = Tag.objects.get_or_create(title=interest)\r\n                profile.interests.add(tag)\r\n\r\n        return Response(ProfileSerializer(profile, context={'request': request}).data)\r\n\r\n    @action(detail=False, methods=['GET'], permission_classes=[IsAuthenticated])\r\n    def requests(self, request: Request) -> Response:\r\n        self.check_permissions(request)\r\n        user: User = request.user\r\n        requests: list[User] = [\r\n            follow.follower\r\n            for follow in Follow.objects.filter(\r\n                followee=user, \r\n                follow_status__in=[Follow.Status.REQUEST_SENT,\r\n                                   Follow.Status.REQUEST_SENT_FIRST])\r\n        ]\r\n        return Response(\r\n            SmallProfileSerializer(requests, many=True).data\r\n        )\r\n\r\n    @action(detail=False, methods=['GET'], permission_classes=[IsAuthenticated])\r\n    def request_count(self, request: Request) -> Response:\r\n        self.check_permissions(request)\r\n        user: User = request.user\r\n        count: int = Follow.objects.filter(\r\n            followee=user, \r\n            follow_status__in=[Follow.Status.REQUEST_SENT,\r\n                               Follow.Status.REQUEST_SENT_FIRST]).count()\r\n        return Response({\r\n            'count': count\r\n        })\r\n\r\n    @action(detail=False, methods=['GET'], permission_classes=[IsAuthenticated])\r\n    def recommended_users(self, request: Request) -> Response:\r\n        self.check_permissions(request)\r\n        profile: Profile = request.user.profile\r\n        detailed: int = int(request.query_params.get(\"detailed\", 0))\r\n        page: int = int(request.query_params.get(\"page\", 1))\r\n        recommended: list[User] = profile.friend_recommendation()\r\n        if detailed:\r\n            profiles: list[Profile] = [user.profile for user in recommended]\r\n            return Response(\r\n                ProfileSerializer(\r\n                    profiles,\r\n                    many=True,\r\n                    context={'request': request}\r\n                ).data\r\n            )\r\n        else:\r\n            return Response(\r\n                SmallProfileSerializer(recommended, many=True).data\r\n            )\r\n\r\n    @action(detail=False, methods=['GET'], permission_classes=[IsAuthenticated])\r\n    def notifications(self, request: Request) -> Response:\r\n        self.check_permissions(request)\r\n        profile: Profile = request.user.profile\r\n        return Response(\r\n            profile.get_notifications()\r\n        )\r\n\r\n    @action(detail=False, methods=['GET'], permission_classes=[IsAuthenticated])\r\n    def unread_notifications(self, request: Request) -> Response:\r\n        self.check_permissions(request)\r\n        profile: Profile = request.user.profile\r\n        return Response({\r\n            'message': profile.is_message_notifications_unread(),\r\n            'profile': profile.is_profile_notifications_unread()\r\n        })\r\n        \r\n    @action(detail=True, methods=['GET'])\r\n    def link(self, request: Request, pk: int = None) -> Response:\r\n        profile: Profile = get_object_or_404(User, id=pk).profile\r\n        return Response({'link': profile.get_link()})\r\n\r\n\r\nclass CommunityViewSet(ModelViewSet):\r\n    queryset = Community.objects.all()\r\n    serializer_class = CommunitySerializer\r\n    permission_classes = [IsAuthenticatedOrReadOnly]\r\n    # TODO: Secure Community with permission classes\r\n    pagination_class = CommunityPagination\r\n    filter_backends = [filters.SearchFilter]\r\n    search_fields = ['title']\r\n\r\n    PAGINATION_LIMIT = 20\r\n\r\n    def perform_create(self, serializer):\r\n        community: Community = serializer.save()\r\n        RoledUser.objects.create(\r\n            user=self.request.user,\r\n            privilege=RoledUser.Roles.admin,\r\n            community=community\r\n        )\r\n        get_or_create_group(\r\n            self.request.user,\r\n            None,\r\n            community.title,\r\n            [],\r\n            image_file=community.image,\r\n            community=community)\r\n\r\n    def partial_update(\r\n            self, request: Request, pk: int = None, *args, **kwargs) -> Response:\r\n        user: User = request.user\r\n        community_update_action: str = request.data.get('action')\r\n        community: Community = get_object_or_404(Community, id=pk)\r\n        rolled_user: RoledUser = get_object_or_404(\r\n            RoledUser, user=user, community=community)\r\n\r\n        if not community_update_action:\r\n            return Response({\r\n                \"error\": \"bad data\"\r\n            }, status=405)\r\n        if rolled_user.can_do(action=community_update_action.split(\"|\")[0]):\r\n            try:\r\n                match community_update_action:\r\n                    case \"edit\":\r\n                        community.edit(request.data['updated_attributes'])\r\n                    case \"roles\":\r\n                        community.change_role(\r\n                            request.data[\"other_user\"], request.data[\"updated_role\"])\r\n                    case \"users|ban\":\r\n                        community.ban_user(request.data[\"other_user\"])\r\n                    case \"posts|remove\":\r\n                        community.remove_post(request.data['post_id'])\r\n                return Response(\r\n                    CommunitySerializer(\r\n                        community, context={'request': request}).data\r\n                )\r\n            except KeyError as e:\r\n                return Response({\r\n                    \"action_performed\": True,\r\n                    \"error\": \"bad data\",\r\n                    \"detail\": e\r\n                }, status=405)\r\n        else:\r\n            return Response(\r\n                {\"action_performed\": False, \"error\": \"unauthorized\"}, status=403)\r\n\r\n    @action(detail=True, methods=['GET'])\r\n    def members(self, request: Request, pk: int = None) -> Response:\r\n        community: Community = get_object_or_404(Community, id=pk)\r\n        page_index: int = int(request.query_params.get(\"page\", 1))\r\n        query_all: int = int(request.query_params.get(\"all\", 0))\r\n        members: QuerySet[RoledUser] = community.get_members()\r\n        page, paginator = paginate_queryset(\r\n            members,\r\n            limit=self.PAGINATION_LIMIT,\r\n            index=page_index\r\n        )\r\n        return Response({\r\n            'page_count': paginator.num_pages if not query_all else 1,\r\n            'count': paginator.count,\r\n            'has_next': page.has_next() if not query_all else False,\r\n            'results': [\r\n                RoledUserSerializer(member, context={'request': request}).data\r\n                for member in page.object_list\r\n            ] if not query_all else [\r\n                RoledUserSerializer(member, context={'request': request}).data\r\n                for member in members\r\n            ]\r\n        })\r\n        \r\n    @action(detail=True, methods=['GET'])\r\n    def link(self, request: Request, pk: int = None) -> Response:\r\n        community: Community = get_object_or_404(Community, id=pk)\r\n        return Response({'link': community.get_link()})\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/subjects/views.py b/subjects/views.py
+--- a/subjects/views.py	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/subjects/views.py	(date 1665430053822)
+@@ -168,7 +168,7 @@
+         page: int = int(request.query_params.get("page", 1))
+         recommended: list[User] = profile.friend_recommendation()
+         if detailed:
+-            profiles: list[Profile] = [user.profile for user in recommended]
++            profiles: list[Profile] = [user.profile for user in recommended if user.is_active]
+             return Response(
+                 ProfileSerializer(
+                     profiles,
+Index: stress_tests/generators/member_generator.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/generators/member_generator.py b/stress_tests/generators/member_generator.py
+new file mode 100644
+--- /dev/null	(date 1665435647961)
++++ b/stress_tests/generators/member_generator.py	(date 1665435647961)
+@@ -0,0 +1,31 @@
++from recommender.models import RoledUser
++from django.contrib.auth.models import User
++from subjects.models import Community
++
++from stress_tests.generators.content_generator import ModelGenerator
++
++from random import randrange
++
++
++class MemberGenerator(ModelGenerator):
++    def __init__(self):
++        super(MemberGenerator, self).__init__(RoledUser)
++
++    def generate(self, number: int, **kwargs) -> list[RoledUser]:
++        members: list[User] = kwargs.get("members")
++        communities: list[Community] = kwargs\
++            .get("communities", Community.objects.all())
++        if not members or not communities:
++            raise Exception("Members or communities cannot be none or empty")
++        joined_members = []
++        for community in communities:
++            for potential_member in members:
++                if randrange(1, 101) < 50:
++                    continue
++                member = RoledUser.objects.create(
++                    user=potential_member,
++                    community=community,
++                    privilege=RoledUser.Roles.choices[randrange(0, 6)][0]
++                )
++                joined_members.append(member)
++        return joined_members
+Index: chain/serializers.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>from rest_framework import serializers\r\nfrom .level import ChainManager\r\nfrom subjects.serializers import SmallProfileSerializer\r\nfrom .models import TransferRequest, ChainPage\r\nfrom django.contrib.auth.models import User\r\n\r\n\r\nclass ChainPageSerializer(serializers.ModelSerializer):\r\n    current_xp = serializers.SerializerMethodField()\r\n    target_xp = serializers.SerializerMethodField()\r\n    chain_attributes = serializers.SerializerMethodField()\r\n\r\n    @staticmethod\r\n    def get_current_xp(obj: ChainPage) -> int:\r\n        return obj.get_current_xp()\r\n\r\n    @staticmethod\r\n    def get_target_xp(obj: ChainPage) -> int:\r\n        return obj.get_target_xp()\r\n\r\n    @staticmethod\r\n    def get_chain_attributes(obj: ChainPage) -> dict:\r\n        return ChainManager().chain_attributes(obj.wallet_address).__dict__()\r\n\r\n    class Meta:\r\n        model = ChainPage\r\n        fields = 'url', 'id', 'level', 'staked_level', 'chain_attributes', \\\r\n                 'wallet_address', 'current_xp', 'target_xp', 'user', \\\r\n                 'verifications', 'verified_state'\r\n\r\n\r\nclass TransferableUserSerializer(SmallProfileSerializer):\r\n    wallet_address = serializers.SerializerMethodField()\r\n\r\n    @staticmethod\r\n    def get_wallet_address(obj: User) -> str:\r\n        return obj.chainpage.wallet_address\r\n\r\n    class Meta:\r\n        model = User\r\n        fields = SmallProfileSerializer.Meta.fields + ('wallet_address',)\r\n\r\n\r\nclass TransferRequestSerializer(serializers.ModelSerializer):\r\n    is_verified = serializers.SerializerMethodField()\r\n    amount = serializers.SerializerMethodField()\r\n    verified_num = serializers.SerializerMethodField()\r\n\r\n    def get_is_verified(self, obj: TransferRequest):\r\n        user: User = self.context['request'].user\r\n        return obj.verified_by.all().contains(user)\r\n\r\n    @staticmethod\r\n    def get_amount(obj: TransferRequest) -> str:\r\n        return str(obj.amount)\r\n\r\n    def get_verified_num(self, obj: TransferRequest):\r\n        return obj.verified_by.count()\r\n\r\n    class Meta:\r\n        model = TransferRequest\r\n        fields = \"id\", \"from_addr\", \"to_addr\", \"amount\", \\\r\n                 \"verified_num\", \"is_verified\"\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/chain/serializers.py b/chain/serializers.py
+--- a/chain/serializers.py	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/chain/serializers.py	(date 1665431163355)
+@@ -9,11 +9,16 @@
+     current_xp = serializers.SerializerMethodField()
+     target_xp = serializers.SerializerMethodField()
+     chain_attributes = serializers.SerializerMethodField()
++    id = serializers.SerializerMethodField()
+ 
+     @staticmethod
+     def get_current_xp(obj: ChainPage) -> int:
+         return obj.get_current_xp()
+ 
++    @staticmethod
++    def get_id(obj: ChainPage) -> int:
++        return obj.user.id
++
+     @staticmethod
+     def get_target_xp(obj: ChainPage) -> int:
+         return obj.get_target_xp()
+Index: stress_tests/generators/follow_generator.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/generators/follow_generator.py b/stress_tests/generators/follow_generator.py
+new file mode 100644
+--- /dev/null	(date 1665434268455)
++++ b/stress_tests/generators/follow_generator.py	(date 1665434268455)
+@@ -0,0 +1,29 @@
++from recommender.models import Follow
++from django.contrib.auth.models import User
++
++from stress_tests.generators.content_generator import ModelGenerator
++
++from random import randrange
++
++
++class FollowGenerator(ModelGenerator):
++    def __init__(self):
++        super(FollowGenerator, self).__init__(Follow)
++    
++    def generate(self, number: int, **kwargs) -> list[Follow]:
++        users: list[User] = kwargs.get("users")
++        if not users:
++            raise Exception("Users cannot be none or empty")
++        follows = []
++        for user in users:
++            for potential_followee in users:
++                if randrange(1, 101) < 50:
++                    continue
++                follow = Follow.objects.create(
++                    follower=user,
++                    followee=potential_followee,
++                    follow_status=Follow.Status.FOLLOWING
++                )
++                follows.append(follow)
++        return follows
++
+Index: ../../sylvest_flutter/lib/discover/components/discover_components.dart
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import 'package:carousel_slider/carousel_slider.dart';\r\nimport 'package:flutter/material.dart';\r\nimport 'package:line_icons/line_icons.dart';\r\nimport 'package:sylvest_flutter/discover/pages/communities_page.dart';\r\nimport 'package:sylvest_flutter/discover/pages/tag_posts_page.dart';\r\nimport 'package:sylvest_flutter/home/home.dart';\r\nimport 'package:sylvest_flutter/home/main_components.dart';\r\nimport 'package:sylvest_flutter/home/pages.dart';\r\nimport 'package:sylvest_flutter/posts/pages/events_map_page.dart';\r\nimport 'package:sylvest_flutter/posts/pages/projects_page.dart';\r\nimport 'package:sylvest_flutter/services/api.dart';\r\nimport 'package:sylvest_flutter/services/mangers.dart';\r\nimport 'package:sylvest_flutter/subjects/communities/communities.dart';\r\nimport 'package:sylvest_flutter/subjects/user/user_page.dart';\r\n\r\nimport '../../services/image_service.dart';\r\nimport '../../subjects/subject_util.dart';\r\n\r\nclass DiscoverSection extends StatelessWidget {\r\n  const DiscoverSection({Key? key, required this.title, required this.child})\r\n      : super(key: key);\r\n  final String title;\r\n  final Widget child;\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return Container(\r\n      margin: const EdgeInsets.symmetric(vertical: 10),\r\n      child: Column(\r\n        crossAxisAlignment: CrossAxisAlignment.start,\r\n        children: [\r\n          Container(\r\n            decoration: BoxDecoration(\r\n                color: Color(0xFF733CE6),\r\n                borderRadius:\r\n                    BorderRadius.horizontal(right: Radius.circular(30))),\r\n            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 3),\r\n            margin: const EdgeInsets.symmetric(vertical: 10),\r\n            child: Text(title,\r\n                textAlign: TextAlign.center,\r\n                style: const TextStyle(\r\n                    color: Colors.white,\r\n                    fontFamily: 'Quicksand',\r\n                    fontSize: 22)),\r\n          ),\r\n          child\r\n        ],\r\n      ),\r\n    );\r\n  }\r\n}\r\n\r\nclass RecommendedUsers extends StatefulWidget {\r\n  const RecommendedUsers({Key? key}) : super(key: key);\r\n\r\n  @override\r\n  State<RecommendedUsers> createState() => _RecommendedUsersState();\r\n}\r\n\r\nclass _RecommendedUsersState extends State<RecommendedUsers> {\r\n  List<RecommendedProfile> _profiles = [];\r\n  bool _loading = false;\r\n\r\n  Future<void> _getProfiles() async {\r\n    setState(() {\r\n      _loading = true;\r\n    });\r\n    final recommended = await API().getRecommendedProfiles(context);\r\n    setState(() {\r\n      _profiles = recommended\r\n          .map<RecommendedProfile>((e) => RecommendedProfile(\r\n                data: e,\r\n              ))\r\n          .toList();\r\n      _loading = false;\r\n    });\r\n  }\r\n\r\n  @override\r\n  void initState() {\r\n    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {\r\n      _getProfiles();\r\n    });\r\n    super.initState();\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return DiscoverSection(\r\n      title: \"Users\",\r\n      child: _loading\r\n          ? LoadingIndicator()\r\n          : _profiles.isEmpty\r\n              ? SizedBox(\r\n                  height: 100,\r\n                  child: Center(\r\n                      child: Text(\r\n                    \"No profiles yet!\",\r\n                    style: TextStyle(color: Colors.grey),\r\n                  )),\r\n                )\r\n              : CarouselSlider(\r\n                  items: _profiles,\r\n                  options: CarouselOptions(\r\n                      aspectRatio: 16 / 12,\r\n                      viewportFraction: 0.8,\r\n                      enlargeCenterPage: true),\r\n                ),\r\n    );\r\n  }\r\n}\r\n\r\nclass RecommendedProfile extends StatelessWidget {\r\n  const RecommendedProfile({Key? key, required this.data}) : super(key: key);\r\n\r\n  final ProfileData data;\r\n\r\n  factory RecommendedProfile.fromJson(Map json) {\r\n    return RecommendedProfile(data: ProfileData.fromJson(json));\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return GestureDetector(\r\n      onTap: () => Navigator.push(\r\n          context, MaterialPageRoute(builder: (context) => UserPage(data.id))),\r\n      child: Container(\r\n        clipBehavior: Clip.antiAlias,\r\n        decoration: BoxDecoration(\r\n            color: Colors.white,\r\n            borderRadius: BorderRadius.circular(10),\r\n            boxShadow: [\r\n              BoxShadow(color: Colors.black12, blurRadius: 5, spreadRadius: 2)\r\n            ]),\r\n        padding: const EdgeInsets.all(10),\r\n        margin: const EdgeInsets.all(10),\r\n        child: Column(\r\n          mainAxisAlignment: MainAxisAlignment.spaceEvenly,\r\n          crossAxisAlignment: CrossAxisAlignment.start,\r\n          children: [\r\n            Row(\r\n              mainAxisAlignment: MainAxisAlignment.spaceEvenly,\r\n              children: [\r\n                SylvestImageProvider(\r\n                  radius: 40,\r\n                  url: data.image,),\r\n                Column(\r\n                  crossAxisAlignment: CrossAxisAlignment.start,\r\n                  children: [\r\n                    Text(\r\n                      data.generalAttributes.username,\r\n                      style: TextStyle(fontSize: 20, fontFamily: 'Quicksand'),\r\n                    ),\r\n                    if (data.title != null && data.title!.isNotEmpty)\r\n                      Text(\r\n                        data.title!,\r\n                        style: TextStyle(color: Colors.black54),\r\n                      )\r\n                  ],\r\n                )\r\n              ],\r\n            ),\r\n            Row(\r\n              mainAxisAlignment: MainAxisAlignment.spaceEvenly,\r\n              children: [\r\n                Column(\r\n                  children: [\r\n                    Icon(LineIcons.userFriends),\r\n                    Text(\r\n                      \"${data.followers} Followers\",\r\n                      style: TextStyle(fontSize: 11),\r\n                    )\r\n                  ],\r\n                ),\r\n                Column(\r\n                  children: [\r\n                    Icon(LineIcons.userFriends),\r\n                    Text(\r\n                      \"${data.following} Following\",\r\n                      style: TextStyle(fontSize: 11),\r\n                    )\r\n                  ],\r\n                ),\r\n                Column(\r\n                  children: [\r\n                    Icon(LineIcons.plusCircle),\r\n                    Text(\r\n                      \"${data.contributing} Contributions\",\r\n                      style: TextStyle(fontSize: 11),\r\n                    )\r\n                  ],\r\n                ),\r\n                Column(\r\n                  children: [\r\n                    Icon(LineIcons.shareSquare),\r\n                    Text(\r\n                      \"${data.posts} Posts\",\r\n                      style: TextStyle(fontSize: 11),\r\n                    )\r\n                  ],\r\n                ),\r\n              ],\r\n            ),\r\n            if (data.about != null && data.about!.isNotEmpty)\r\n              Padding(\r\n                padding: const EdgeInsets.all(5),\r\n                child: Text(\r\n                  data.about!,\r\n                  style: TextStyle(fontSize: 13),\r\n                  maxLines: 2,\r\n                  overflow: TextOverflow.ellipsis,\r\n                ),\r\n              ),\r\n            if (data.interests != null && data.interests!.isNotEmpty)\r\n              Container(\r\n                constraints: BoxConstraints(maxHeight: 30),\r\n                child: ListView(\r\n                  shrinkWrap: true,\r\n                  scrollDirection: Axis.horizontal,\r\n                  children: data.interests!\r\n                      .take(5)\r\n                      .map<Chip>((e) => Chip(\r\n                            labelPadding: const EdgeInsets.symmetric(\r\n                                vertical: -4, horizontal: 10),\r\n                            label: Text(\r\n                              e['title'],\r\n                              style: TextStyle(fontSize: 11),\r\n                            ),\r\n                          ))\r\n                      .toList(),\r\n                ),\r\n              )\r\n            //SizedBox(height: 10,)\r\n          ],\r\n        ),\r\n      ),\r\n    );\r\n  }\r\n}\r\n\r\nclass TrendingCommunities extends StatefulWidget {\r\n  const TrendingCommunities({Key? key}) : super(key: key);\r\n\r\n  @override\r\n  State<TrendingCommunities> createState() => _TrendingCommunitiesState();\r\n}\r\n\r\nclass _TrendingCommunitiesState extends State<TrendingCommunities> {\r\n  final _manager = CommunityManager();\r\n\r\n  List<DiscoverCommunity> _communities = [];\r\n  bool _loading = false;\r\n\r\n  Future<void> _getCommunities() async {\r\n    if (mounted)\r\n      setState(() {\r\n        _loading = true;\r\n      });\r\n    final communities = await _manager.getDiscoverCommunities(context);\r\n    if (mounted)\r\n      setState(() {\r\n        _communities = communities;\r\n        _loading = false;\r\n      });\r\n  }\r\n\r\n  @override\r\n  void initState() {\r\n    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {\r\n      _getCommunities();\r\n    });\r\n    super.initState();\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return DiscoverSection(\r\n      title: \"Communities\",\r\n      child: _loading\r\n          ? LoadingIndicator()\r\n          : _communities.isEmpty\r\n              ? SizedBox(\r\n                  height: 100,\r\n                  child: Center(\r\n                      child: Text(\r\n                    \"No communities yet!\",\r\n                    style: TextStyle(color: Colors.grey),\r\n                  )),\r\n                )\r\n              : CarouselSlider(\r\n                  items: [\r\n                    ..._communities,\r\n                    GestureDetector(\r\n                      onTap: () async => await Navigator.push(\r\n                          context,\r\n                          MaterialPageRoute(\r\n                              builder: (context) => MoreCommunitiesPage())),\r\n                      child: Container(\r\n                        child: Row(\r\n                          mainAxisSize: MainAxisSize.min,\r\n                          children: const [\r\n                            Text(\r\n                              \"More\",\r\n                              style: TextStyle(\r\n                                  color: const Color(0xFF733CE6),\r\n                                  fontFamily: 'Quicksand'),\r\n                            ),\r\n                            SizedBox(width: 10),\r\n                            Icon(\r\n                              LineIcons.angleRight,\r\n                              size: 20,\r\n                              color: const Color(0xFF733CE6),\r\n                            )\r\n                          ],\r\n                        ),\r\n                      ),\r\n                    )\r\n                  ],\r\n                  options: CarouselOptions(\r\n                      enableInfiniteScroll: false,\r\n                      viewportFraction: 0.8,\r\n                      enlargeCenterPage: true),\r\n                ),\r\n    );\r\n  }\r\n}\r\n\r\nclass DiscoverCommunity extends StatelessWidget {\r\n  const DiscoverCommunity({Key? key, required this.data}) : super(key: key);\r\n\r\n  final CommunityData data;\r\n\r\n  factory DiscoverCommunity.fromJson(Map json) {\r\n    return DiscoverCommunity(data: CommunityData.fromJson(json));\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return Container(\r\n      decoration: BoxDecoration(\r\n          color: Colors.white,\r\n          borderRadius: BorderRadius.circular(10),\r\n          boxShadow: [\r\n            BoxShadow(color: Colors.black12, spreadRadius: 2, blurRadius: 5)\r\n          ]),\r\n      margin: const EdgeInsets.symmetric(vertical: 5),\r\n      child: InkWell(\r\n        onTap: () => Navigator.push(\r\n            context,\r\n            MaterialPageRoute(\r\n                builder: (context) => CommunityPage(id: data.id))),\r\n        child: Column(\r\n          mainAxisSize: MainAxisSize.min,\r\n          children: [\r\n            Stack(\r\n              alignment: Alignment.bottomLeft,\r\n              children: [\r\n                ClipRRect(\r\n                  borderRadius:\r\n                      const BorderRadius.vertical(top: Radius.circular(10)),\r\n                  child: SylvestImage(url: data.banner, useDefault: true, height: 100, width: double.infinity),\r\n                ),\r\n                Positioned.fill(\r\n                    child: Container(\r\n                  decoration: BoxDecoration(\r\n                      color: Colors.black45,\r\n                      borderRadius: const BorderRadius.vertical(\r\n                          top: Radius.circular(10))),\r\n                  width: double.maxFinite,\r\n                  height: double.maxFinite,\r\n                )),\r\n                Positioned(\r\n                  left: 10,\r\n                  bottom: 10,\r\n                  child: Text(\r\n                    data.title!,\r\n                    style: TextStyle(\r\n                        color: Colors.white,\r\n                        fontFamily: 'Quicksand',\r\n                        fontSize: 22),\r\n                  ),\r\n                ),\r\n              ],\r\n            ),\r\n            Spacer(),\r\n            Row(\r\n              mainAxisAlignment: MainAxisAlignment.spaceEvenly,\r\n              children: [\r\n                SylvestImageProvider(\r\n                  radius: 30,\r\n                  url: data.image,),\r\n                Column(\r\n                  children: [\r\n                    Text(data.shortDescription,\r\n                        style:\r\n                            TextStyle(fontSize: 16, fontFamily: 'Quicksand')),\r\n                    const SizedBox(height: 5),\r\n                    Row(\r\n                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,\r\n                      children: [\r\n                        Column(\r\n                          children: [\r\n                            Icon(LineIcons.user),\r\n                            Text(\r\n                              \"${data.members} Members\",\r\n                              style: TextStyle(fontSize: 11),\r\n                            )\r\n                          ],\r\n                        ),\r\n                        const SizedBox(\r\n                          width: 10,\r\n                        ),\r\n                        Column(\r\n                          children: [\r\n                            Icon(LineIcons.shareSquare),\r\n                            Text(\r\n                              \"${data.posts} Posts\",\r\n                              style: TextStyle(fontSize: 11),\r\n                            )\r\n                          ],\r\n                        ),\r\n                      ],\r\n                    )\r\n                  ],\r\n                )\r\n              ],\r\n            ),\r\n            Spacer()\r\n          ],\r\n        ),\r\n      ),\r\n    );\r\n  }\r\n}\r\n\r\nclass RecommendedEvents extends StatefulWidget {\r\n  const RecommendedEvents({Key? key}) : super(key: key);\r\n\r\n  @override\r\n  State<RecommendedEvents> createState() => _RecommendedEventsState();\r\n}\r\n\r\nclass _RecommendedEventsState extends State<RecommendedEvents> {\r\n  final _manager = EventsManager();\r\n\r\n  List<EventSmallCard> _events = [];\r\n  bool _loading = false;\r\n\r\n  Future<void> _getEvents() async {\r\n    setState(() {\r\n      _loading = true;\r\n    });\r\n    final events = await _manager.getEventsWithLocations(context);\r\n    if (mounted)\r\n      setState(() {\r\n        _events = events;\r\n        _loading = false;\r\n      });\r\n  }\r\n\r\n  @override\r\n  void initState() {\r\n    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {\r\n      if (_events.isEmpty) _getEvents();\r\n    });\r\n    super.initState();\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return DiscoverSection(\r\n        title: \"Events\",\r\n        child: Container(\r\n          margin: const EdgeInsets.all(10),\r\n          child: _loading\r\n              ? Container(\r\n                  decoration: BoxDecoration(\r\n                    color: Colors.white,\r\n                  ),\r\n                  height: 100,\r\n                  child: LoadingIndicator(),\r\n                )\r\n              : EventsSmallMap(eventsWithLocation: _events),\r\n        ));\r\n  }\r\n}\r\n\r\nclass RecommendedProjects extends StatefulWidget {\r\n  const RecommendedProjects({Key? key}) : super(key: key);\r\n\r\n  @override\r\n  State<RecommendedProjects> createState() => _RecommendedProjectsState();\r\n}\r\n\r\nclass _RecommendedProjectsState extends State<RecommendedProjects> {\r\n  final _manager = ProjectManager();\r\n\r\n  List<MostFundedData> _mostFunded = [];\r\n  double _max = 100.0;\r\n  bool _loading = false;\r\n\r\n  Future<void> _getMostFunded() async {\r\n    setState(() {\r\n      _loading = true;\r\n    });\r\n    final funded = await _manager.getProjects(context);\r\n    if (mounted)\r\n      setState(() {\r\n        _mostFunded = funded\r\n            .take(5)\r\n            .map<MostFundedData>((e) => MostFundedData(\r\n                title: e.data.title,\r\n                authorImage: e.data.authorDetails.profileImage,\r\n                currentFund: e.data.projectFields!.totalFunded,\r\n                id: e.data.postId))\r\n            .toList();\r\n        _loading = false;\r\n      });\r\n  }\r\n\r\n  @override\r\n  void initState() {\r\n    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {\r\n      if (_mostFunded.isEmpty) _getMostFunded();\r\n    });\r\n    super.initState();\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return DiscoverSection(\r\n        title: \"Projects\",\r\n        child: Container(\r\n          margin: const EdgeInsets.all(10),\r\n          child: _loading\r\n              ? Container(\r\n                  decoration: BoxDecoration(\r\n                      color: Colors.white,\r\n                      borderRadius: BorderRadius.circular(10)),\r\n                  height: 100,\r\n                  child: LoadingIndicator(),\r\n                )\r\n              : _mostFunded.isEmpty\r\n                  ? SizedBox(\r\n                      height: 100,\r\n                      child: Center(\r\n                          child: Text(\r\n                        \"No projects yet!\",\r\n                        style: TextStyle(color: Colors.grey),\r\n                      )),\r\n                    )\r\n                  : MostFundedProjects(mostFunded: _mostFunded, max: _max),\r\n        ));\r\n  }\r\n}\r\n\r\nclass RecommendedTags extends StatefulWidget {\r\n  const RecommendedTags({Key? key}) : super(key: key);\r\n\r\n  @override\r\n  State<RecommendedTags> createState() => _RecommendedTagsState();\r\n}\r\n\r\nclass _RecommendedTagsState extends State<RecommendedTags> {\r\n  List<DiscoverTag> _tags = [];\r\n  bool _loading = false;\r\n\r\n  Future<void> _getTags() async {\r\n    if (mounted)\r\n      setState(() {\r\n        _loading = true;\r\n      });\r\n    final tags = await API().getTags(context);\r\n    if (mounted)\r\n      setState(() {\r\n        _tags = tags;\r\n        _loading = false;\r\n      });\r\n  }\r\n\r\n  @override\r\n  void initState() {\r\n    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {\r\n      _getTags();\r\n    });\r\n    super.initState();\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return _tags.isEmpty\r\n        ? SizedBox()\r\n        : DiscoverSection(\r\n            title: \"Tags\",\r\n            child: _loading\r\n                ? LoadingIndicator()\r\n                : Wrap(\r\n                    spacing: -8,\r\n                    runSpacing: -25,\r\n                    children: _tags,\r\n                  ));\r\n  }\r\n}\r\n\r\nclass DiscoverTag extends StatelessWidget {\r\n  const DiscoverTag(\r\n      {Key? key,\r\n      required this.id,\r\n      required this.title,\r\n      this.backgroundColor = Colors.red,\r\n      this.materialColor = Colors.white,\r\n      this.icon = LineIcons.hashtag,\r\n      this.launchOnTap = true})\r\n      : super(key: key);\r\n  final int id;\r\n  final String title;\r\n  final Color backgroundColor;\r\n  final Color materialColor;\r\n  final IconData icon;\r\n  final bool launchOnTap;\r\n\r\n  factory DiscoverTag.fromJson(Map json) =>\r\n      DiscoverTag(id: json['id'], title: json['title']);\r\n\r\n  Future<void> _launchTagPostsPage(context) async {\r\n    await Navigator.push(\r\n        context,\r\n        MaterialPageRoute(\r\n            builder: (context) => TagPostsPage(\r\n                tagFilter: PostTagFilter(tagId: id, tagTitle: title))));\r\n  }\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return Container(\r\n      padding: const EdgeInsets.all(10),\r\n      child: InkWell(\r\n        borderRadius: BorderRadius.circular(30),\r\n        onTap:\r\n            launchOnTap ? () async => await _launchTagPostsPage(context) : null,\r\n        child: Chip(\r\n            backgroundColor: backgroundColor,\r\n            onDeleted: launchOnTap\r\n                ? () async => await _launchTagPostsPage(context)\r\n                : null,\r\n            label: Text(title,\r\n                style: TextStyle(color: materialColor, fontSize: 15)),\r\n            deleteIcon: Icon(icon, color: materialColor),\r\n            labelPadding: const EdgeInsets.symmetric(horizontal: 10)),\r\n      ),\r\n    );\r\n  }\r\n}\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/../../sylvest_flutter/lib/discover/components/discover_components.dart b/../../sylvest_flutter/lib/discover/components/discover_components.dart
+--- a/../../sylvest_flutter/lib/discover/components/discover_components.dart	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/../../sylvest_flutter/lib/discover/components/discover_components.dart	(date 1665439288249)
+@@ -66,14 +66,15 @@
+       _loading = true;
+     });
+     final recommended = await API().getRecommendedProfiles(context);
+-    setState(() {
+-      _profiles = recommended
+-          .map<RecommendedProfile>((e) => RecommendedProfile(
+-                data: e,
+-              ))
+-          .toList();
+-      _loading = false;
+-    });
++    if (mounted)
++      setState(() {
++        _profiles = recommended
++            .map<RecommendedProfile>((e) => RecommendedProfile(
++                  data: e,
++                ))
++            .toList();
++        _loading = false;
++      });
+   }
+ 
+   @override
+@@ -119,6 +120,11 @@
+     return RecommendedProfile(data: ProfileData.fromJson(json));
+   }
+ 
++  String _limiter(String text) {
++    if (text.length < 15) return text;
++    return text.substring(0, 12) + "...";
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return GestureDetector(
+@@ -143,19 +149,43 @@
+               children: [
+                 SylvestImageProvider(
+                   radius: 40,
+-                  url: data.image,),
++                  url: data.image,
++                ),
+                 Column(
+                   crossAxisAlignment: CrossAxisAlignment.start,
+                   children: [
+                     Text(
+-                      data.generalAttributes.username,
++                      _limiter(data.generalAttributes.username),
+                       style: TextStyle(fontSize: 20, fontFamily: 'Quicksand'),
+                     ),
+                     if (data.title != null && data.title!.isNotEmpty)
+                       Text(
+-                        data.title!,
++                        _limiter(data.title!),
+                         style: TextStyle(color: Colors.black54),
+-                      )
++                      ),
++                    Container(
++                      margin: const EdgeInsets.symmetric(vertical: 10,horizontal: 0),
++                      height: 30,
++                      child: OutlinedButton(
++                          style: OutlinedButton.styleFrom(
++                              primary: const Color(0xFF733CE6),
++                              shape: RoundedRectangleBorder(
++                                  borderRadius: BorderRadius.circular(30))),
++                          onPressed: () => Navigator.push(
++                              context,
++                              MaterialPageRoute(
++                                  builder: (context) => UserPage(data.id))),
++                          child: Row(
++                            mainAxisAlignment: MainAxisAlignment.center,
++                            children: const [
++                              Icon(LineIcons.userPlus),
++                              SizedBox(
++                                width: 10,
++                              ),
++                              Text("Follow")
++                            ],
++                          )),
++                    )
+                   ],
+                 )
+               ],
+@@ -319,6 +349,7 @@
+                   options: CarouselOptions(
+                       enableInfiniteScroll: false,
+                       viewportFraction: 0.8,
++                      height: 275,
+                       enlargeCenterPage: true),
+                 ),
+     );
+@@ -334,6 +365,11 @@
+     return DiscoverCommunity(data: CommunityData.fromJson(json));
+   }
+ 
++  String _limiter(String text) {
++    if (text.length < 20) return text;
++    return text.substring(0, 17) + "...";
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return Container(
+@@ -350,15 +386,18 @@
+             MaterialPageRoute(
+                 builder: (context) => CommunityPage(id: data.id))),
+         child: Column(
+-          mainAxisSize: MainAxisSize.min,
+           children: [
+             Stack(
+-              alignment: Alignment.bottomLeft,
++              alignment: Alignment.bottomCenter,
+               children: [
+                 ClipRRect(
+                   borderRadius:
+                       const BorderRadius.vertical(top: Radius.circular(10)),
+-                  child: SylvestImage(url: data.banner, useDefault: true, height: 100, width: double.infinity),
++                  child: SylvestImage(
++                      url: data.banner,
++                      useDefault: true,
++                      height: 100,
++                      width: double.infinity),
+                 ),
+                 Positioned.fill(
+                     child: Container(
+@@ -370,10 +409,9 @@
+                   height: double.maxFinite,
+                 )),
+                 Positioned(
+-                  left: 10,
+                   bottom: 10,
+                   child: Text(
+-                    data.title!,
++                    _limiter(data.title!),
+                     style: TextStyle(
+                         color: Colors.white,
+                         fontFamily: 'Quicksand',
+@@ -388,10 +426,11 @@
+               children: [
+                 SylvestImageProvider(
+                   radius: 30,
+-                  url: data.image,),
++                  url: data.image,
++                ),
+                 Column(
+                   children: [
+-                    Text(data.shortDescription,
++                    Text(_limiter(data.shortDescription),
+                         style:
+                             TextStyle(fontSize: 16, fontFamily: 'Quicksand')),
+                     const SizedBox(height: 5),
+@@ -425,7 +464,30 @@
+                 )
+               ],
+             ),
+-            Spacer()
++            //Spacer(),
++            Container(
++              margin: const EdgeInsets.symmetric(vertical: 15,horizontal: 30),
++              height: 30,
++              child: OutlinedButton(
++                  style: OutlinedButton.styleFrom(
++                      primary: const Color(0xFF733CE6),
++                      shape: RoundedRectangleBorder(
++                          borderRadius: BorderRadius.circular(30))),
++                  onPressed: () => Navigator.push(
++                      context,
++                      MaterialPageRoute(
++                          builder: (context) => CommunityPage(id: data.id))),
++                  child: Row(
++                    mainAxisAlignment: MainAxisAlignment.center,
++                    children: const [
++                      Icon(LineIcons.userPlus),
++                      SizedBox(
++                        width: 10,
++                      ),
++                      Text("Join")
++                    ],
++                  )),
++            )
+           ],
+         ),
+       ),
+Index: subjects/serializers.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>\r\nfrom rest_framework import serializers\r\nfrom django.contrib.auth.models import User\r\nfrom django.core.exceptions import ObjectDoesNotExist\r\n\r\nfrom api.helper import get_profile_image\r\nfrom api.serializers import Base64ImageField\r\nfrom blog.models import EventPost, FundablePost\r\nfrom chain.level import ChainManager\r\nfrom subjects.models import Profile, Subject, Community\r\nfrom blog.models import MasterPost\r\nfrom recommender.models import Follow\r\n\r\n\r\nclass UserSerializer(serializers.HyperlinkedModelSerializer):\r\n    class Meta:\r\n        model = User\r\n        fields = '__all__'\r\n\r\n\r\nclass SmallProfileSerializer(serializers.ModelSerializer):\r\n    image = serializers.SerializerMethodField()\r\n\r\n    @staticmethod\r\n    def get_image(obj: User) -> str | None:\r\n        return get_profile_image(obj)\r\n\r\n    class Meta:\r\n        model = User\r\n        fields = 'username', 'id', 'image'\r\n\r\n\r\nclass SmallCommunitySerializer(serializers.ModelSerializer):\r\n    image = serializers.SerializerMethodField()\r\n    master = serializers.SerializerMethodField()\r\n\r\n    @staticmethod\r\n    def get_image(obj: Community) -> str | None:\r\n        return obj.image.url if obj.image else None\r\n\r\n    @staticmethod\r\n    def get_master(obj: Community) -> str | None:\r\n        return obj.master_community.title \\\r\n            if obj.master_community is not None else None\r\n\r\n    class Meta:\r\n        model = Community\r\n        fields = 'id', 'title', 'image', 'master'\r\n\r\n\r\nclass StoryProfileSerializer(SmallProfileSerializer):\r\n    title = serializers.SerializerMethodField()\r\n\r\n    @staticmethod\r\n    def get_title(obj: User) -> str:\r\n        return obj.profile.title\r\n\r\n    class Meta(SmallProfileSerializer.Meta):\r\n        fields = SmallProfileSerializer.Meta.fields + ('title',)\r\n\r\n\r\nclass SubjectSerializer(serializers.ModelSerializer):\r\n    image = Base64ImageField(max_length=None, use_url=True, allow_null=True)\r\n    banner = Base64ImageField(max_length=None, use_url=True, allow_null=True)\r\n    posts = serializers.SerializerMethodField()\r\n\r\n    class Meta:\r\n        model = Subject\r\n        fields = [\"id\", \"title\", \"info\", \"about\", \"image\", \"banner\", \"posts\"]\r\n\r\n\r\nclass ProfileSerializer(SubjectSerializer):\r\n    following = serializers.SerializerMethodField()\r\n    followers = serializers.SerializerMethodField()\r\n    posts = serializers.SerializerMethodField()\r\n    communities = serializers.SerializerMethodField()\r\n    attending = serializers.SerializerMethodField()\r\n    contributing = serializers.SerializerMethodField()\r\n\r\n    interests = serializers.SerializerMethodField()\r\n\r\n    general_attributes = serializers.SerializerMethodField()\r\n\r\n    first_name = serializers.CharField(source=\"user.first_name\")\r\n    last_name = serializers.CharField(source=\"user.last_name\")\r\n\r\n    image = Base64ImageField(max_length=None, use_url=True, allow_null=True)\r\n    banner = Base64ImageField(max_length=None, use_url=True, allow_null=True)\r\n\r\n    chain_details = serializers.SerializerMethodField()\r\n\r\n    @staticmethod\r\n    def follow_status(user: User, obj: Profile) -> int:\r\n        try:\r\n            return Follow.objects\\\r\n                .get(follower__id=user.id, followee=obj.user).get_status()\r\n        except ObjectDoesNotExist:\r\n            return Follow.Status.NOT_FOLLOWING\r\n\r\n    def get_general_attributes(self, obj: Profile) -> dict:\r\n        request_user = self.context['request'].user\r\n        return {\r\n            'username': obj.user.username,\r\n            'is_private': obj.is_private,\r\n            'is_owner': request_user == obj.user,\r\n            'follow_status': self.follow_status(request_user, obj)\r\n        }\r\n\r\n    @staticmethod\r\n    def get_following(obj: Profile) -> int:\r\n        return obj.get_following().count()\r\n\r\n    @staticmethod\r\n    def get_followers(obj: Profile) -> int:\r\n        return obj.get_followers().count()\r\n\r\n    @staticmethod\r\n    def get_posts(obj: Profile) -> int:\r\n        return MasterPost.objects.filter(author=obj.user).count()\r\n\r\n    @staticmethod\r\n    def get_communities(obj: Profile) -> int:\r\n        return obj.get_joined_communities_roles().count()\r\n\r\n    @staticmethod\r\n    def get_attending(obj: Profile) -> int:\r\n        return EventPost.attendies.through.objects.filter(user=obj.user).count()\r\n\r\n    @staticmethod\r\n    def get_contributing(obj: Profile) -> int:\r\n        return FundablePost\\\r\n            .contributers.through.objects.filter(user=obj.user).count()\r\n\r\n    @staticmethod\r\n    def get_interests(obj: Profile) -> list[dict]:\r\n        from blog.serializers import TagSerializer\r\n\r\n        return TagSerializer(obj.get_interests(), many=True).data\r\n\r\n    @staticmethod\r\n    def get_chain_details(obj: Profile) -> dict | None:\r\n        if not obj.user.chainpage.is_verified():\r\n            return None\r\n        try:\r\n            return {\r\n                'balance': str(ChainManager().call(\r\n                    ChainManager.Functions.BALANCE_OF,\r\n                    obj.user.chainpage.wallet_address\r\n                )),\r\n                'address': obj.user.chainpage.wallet_address\r\n            }\r\n        except Exception as e:\r\n            print(e)\r\n            return None\r\n\r\n    class Meta(SubjectSerializer.Meta):\r\n        model = Profile\r\n        fields = SubjectSerializer.Meta.fields + [\r\n            'user', 'communities', 'attending', 'general_attributes',\r\n            'interests', 'contributing', 'following', 'followers', 'is_private',\r\n            'gender', 'address', 'first_name', 'last_name', 'chain_details'\r\n        ]\r\n\r\n\r\nclass CommunitySerializer(SubjectSerializer):\r\n    is_joined = serializers.SerializerMethodField()\r\n    sub_communities = serializers.SerializerMethodField()\r\n    members = serializers.SerializerMethodField()\r\n    founder = serializers.SerializerMethodField()\r\n    master_community_info = serializers.SerializerMethodField()\r\n\r\n    def get_is_joined(self, obj: Community):\r\n        user = self.context[\"request\"].user\r\n        if user.is_anonymous:\r\n            return False\r\n        return obj.get_members().filter(user=user).exists()\r\n\r\n    @staticmethod\r\n    def get_posts(obj: Community):\r\n        return obj.get_posts().count()\r\n\r\n    @staticmethod\r\n    def get_members(obj: Community) -> int:\r\n        return obj.get_members().count()\r\n\r\n    @staticmethod\r\n    def get_founder(obj: Community) -> dict:\r\n        founder: User = obj.get_founder()\r\n        return SmallProfileSerializer(founder).data\r\n\r\n    @staticmethod\r\n    def get_master_community_info(obj: Community) -> dict | None:\r\n        if not obj.master_community:\r\n            return None\r\n        return SmallCommunitySerializer(obj.master_community).data\r\n\r\n    @staticmethod\r\n    def get_sub_communities(obj: Community) -> int:\r\n        return obj.get_sub_communities().count()\r\n\r\n    class Meta(SubjectSerializer.Meta):\r\n        model = Community\r\n        fields = SubjectSerializer.Meta.fields + [\r\n            \"is_joined\", \"members\", 'short_description',\r\n            \"sub_communities\", \"master_community\",\r\n            \"master_community_info\", \"founder\"\r\n        ]\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/subjects/serializers.py b/subjects/serializers.py
+--- a/subjects/serializers.py	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/subjects/serializers.py	(date 1665431068834)
+@@ -70,6 +70,7 @@
+ 
+ 
+ class ProfileSerializer(SubjectSerializer):
++    id = serializers.SerializerMethodField()
+     following = serializers.SerializerMethodField()
+     followers = serializers.SerializerMethodField()
+     posts = serializers.SerializerMethodField()
+@@ -89,6 +90,10 @@
+ 
+     chain_details = serializers.SerializerMethodField()
+ 
++    @staticmethod
++    def get_id(obj: Profile) -> int:
++        return obj.user.id
++
+     @staticmethod
+     def follow_status(user: User, obj: Profile) -> int:
+         try:
+Index: stress_tests/generators/user_generator.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/generators/user_generator.py b/stress_tests/generators/user_generator.py
+new file mode 100644
+--- /dev/null	(date 1665431705565)
++++ b/stress_tests/generators/user_generator.py	(date 1665431705565)
+@@ -0,0 +1,45 @@
++from django.contrib.auth.models import User
++from django.core.files.base import ContentFile
++
++from stress_tests.generators.content_generator import ModelGenerator
++from stress_tests.generators.random_generators import RandomFilePicker, RandomNameGenerator
++
++
++class UserGenerator(ModelGenerator):
++    __name_generator: RandomNameGenerator
++    __file_generator: RandomFilePicker
++
++    def __init__(self):
++        self.__name_generator = RandomNameGenerator(r"collections/usernames")
++        self.__file_generator = RandomFilePicker(r"collections/photos")
++        super(UserGenerator, self).__init__(User)
++
++    def generate(self, number: int, **kwargs) -> list[User]:
++        generated: list[User] = []
++        password: str = kwargs.get("password", "cCcRrRcCc")
++        for i in range(number):
++            username = f"{self.__name_generator.get_item()}{self.last_id}"
++            user: User = User.objects.create_user(
++                username=username,
++                password=password,
++                email=f"generated{self.last_id}@mail.com"
++            )
++            self.last_id += 1
++
++            user.unapproveduser.verify()
++
++            print(self.__file_generator.get_item())
++
++            with open(self.__file_generator.get_item(), "rb") as f:
++                user.profile.image.save(
++                    name=f"{user}profile{i}.png",
++                    content=ContentFile(f.read())
++                )
++            with open(self.__file_generator.get_item(), "rb") as f:
++                user.profile.banner.save(
++                    name=f"{user}banner{i}.png",
++                    content=ContentFile(f.read())
++                )
++            print("generated: " + str(i) + " " + user.username)
++            generated.append(user)
++        return generated
+Index: stress_tests/stress_tester.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/stress_tester.py b/stress_tests/stress_tester.py
+new file mode 100644
+--- /dev/null	(date 1665435609683)
++++ b/stress_tests/stress_tester.py	(date 1665435609683)
+@@ -0,0 +1,51 @@
++import os, django
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "sylvest_django.settings")
++django.setup()
++
++from generators.user_generator import UserGenerator
++from generators.community_generator import CommunityGenerator
++from generators.follow_generator import FollowGenerator
++from generators.member_generator import MemberGenerator
++
++user_generator = UserGenerator()
++community_generator = CommunityGenerator()
++follow_generator = FollowGenerator()
++member_generator = MemberGenerator()
++
++def generate_users(number: int):
++    user_generator.generate(number)
++
++
++def generate_community(number: int):
++    community_generator.generate(number)
++
++
++def generate_followers():
++    from django.contrib.auth.models import User
++
++    follow_generator.generate(0, users=User.objects.all())
++
++
++def generate_members():
++    from django.contrib.auth.models import User
++    from subjects.models import Community
++
++    member_generator.generate(
++        0,
++        members=User.objects.all(),
++        communities=Community.objects.all()
++    )
++
++
++def main():
++    user_number = 100
++    # generate_users(user_number)
++    community_number = 1000
++    # generate_community(1000)
++    # generate_followers()
++    generate_members()
++
++
++if __name__ == "__main__":
++    main()
+Index: stress_tests/collections/links
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/collections/links b/stress_tests/collections/links
+new file mode 100644
+--- /dev/null	(date 1665416492577)
++++ b/stress_tests/collections/links	(date 1665416492577)
+@@ -0,0 +1,100 @@
++youtube.com
++en.wikipedia.org
++twitter.com
++instagram.com
++amazon.com
++pinterest.com
++imdb.com
++es.wikipedia.org	
++facebook.com
++fandom.com
++apple.com
++ja.wikipedia.org
++de.wikipedia.org
++live.com
++cricbuzz.com
++fr.wikipedia.org
++linkedin.com
++globo.com
++microsoft.com
++nytimes.com
++etsy.com
++it.wikipedia.org
++mayoclinic.org
++healthline.com
++indiatimes.com
++amazon.in
++amazon.de
++bbc.co.uk
++ikea.com
++amazon.co.jp
++amazon.co.uk
++indeed.com
++flipkart.com
++bbc.com
++espn.com
++mail.yahoo.com
++ebay.com
++hurriyet.com.tr
++allegro.pl
++booking.com
++mercadolivre.com.br
++britannica.com
++google.com
++kompas.com
++nih.gov
++cnn.com
++merriam-webster.com
++homedepot.com
++amazon.fr
++ar.wikipedia.org
++detik.com
++nike.com
++medlineplus.gov
++id.wikipedia.org
++brainly.co.id
++milliyet.com.tr
++accuweather.com
++magazineluiza.com.br
++marca.com
++medicalnewstoday.com
++cdc.gov
++hepsiburada.com
++cambridge.org
++cookpad.com
++m.wikipedia.org
++dailymail.co.uk
++as.com
++ilovepdf.com
++gsmarena.com
++byjus.com
++amazon.it
++adobe.com
++investing.com
++epfindia.gov.in
++clevelandclinic.org
++aliexpress.com
++espncricinfo.com
++india.com
++ndtv.com
++canva.com
++amazon.es
++craigslist.org
++finance.yahoo.com
++dailymotion.com
++indiamart.com
++kinopoisk.ru
++nl.wikipedia.org
++onet.pl
++omegle.com
++goal.com
++americanas.com.br
++investopedia.com
++dictionary.com
++mail.ru
++ebay.co.uk
++naver.com
++hm.com
++hotstar.com
++bestbuy.com
++collinsdictionary.com
+\ No newline at end of file
+Index: stress_tests/collections/photos/random_photo_downloader.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/collections/photos/random_photo_downloader.py b/stress_tests/collections/photos/random_photo_downloader.py
+new file mode 100644
+--- /dev/null	(date 1665415870216)
++++ b/stress_tests/collections/photos/random_photo_downloader.py	(date 1665415870216)
+@@ -0,0 +1,19 @@
++from urllib.request import urlretrieve
++
++PHOTO_LIBRARY = "https://picsum.photos"
++
++
++def download_photos(photo_number: int, photo_size: int) -> None:
++    for i in range(photo_number):
++        name = f"sample_photo_{i + 1}.jpg"
++        urlretrieve(
++            url=f"{PHOTO_LIBRARY}/{photo_size}",
++            filename=name,
++        )
++        print("downloaded: ", name)
++
++
++if __name__ == "__main__":
++    number = 50
++    size = 500
++    download_photos(number, size)
+Index: stress_tests/generators/random_generators.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/generators/random_generators.py b/stress_tests/generators/random_generators.py
+new file mode 100644
+--- /dev/null	(date 1665429706504)
++++ b/stress_tests/generators/random_generators.py	(date 1665429706504)
+@@ -0,0 +1,52 @@
++import json
++from random import randrange
++from typing import Tuple
++from requests import get
++import os
++from abc import ABC
++
++from sylvest_django.settings import BASE_DIR
++
++
++class RandomGenerator(ABC):
++    _items: list[str]
++
++    def __init__(self, file_path: str) -> None:
++        self._initialize_generator(file_path)
++
++    def _initialize_generator(self, file_path: str) -> None:
++        raise NotImplementedError()
++
++    def get_item(self) -> str:
++        return self._items[randrange(0, len(self._items))]
++
++
++class RandomNameGenerator(RandomGenerator):
++    def _initialize_generator(self, file_path: str) -> None:
++        with open(file_path, "r") as f:
++            self._items = f.readlines()
++
++    def get_item(self) -> str:
++        return super().get_item().replace("\n", "").strip()
++
++
++class RandomFilePicker(RandomGenerator):
++    def _initialize_generator(self, file_path: str) -> None:
++        self._items = []
++        for file in os.listdir(file_path):
++            if ".py" in file:
++                continue
++            self._items.append(f"{file_path}/{file}")
++
++    # def get_item(self) -> str:
++    #     return os.path.join(BASE_DIR, "stress_tests", super().get_item())
++
++
++def random_post_type() -> str:
++    return ['PO', 'EV', 'PR'][randrange(0, 3)]
++
++
++def random_coordinates() -> Tuple[float, float]:
++    response = get("https://api.3geonames.org/?randomland=yes").content
++    data: dict = json.loads(response)
++    return data['geodata']['nearest']['latt'], data['geodata']['nearest']['longt']
+Index: stress_tests/collections/usernames
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/collections/usernames b/stress_tests/collections/usernames
+new file mode 100644
+--- /dev/null	(date 1665414798579)
++++ b/stress_tests/collections/usernames	(date 1665414798579)
+@@ -0,0 +1,239 @@
++curefinal
++totallyhaunt
++ahullpager
++loyaltyfox
++nunwornout
++resolutionyeah
++grabexecutive
++equatorialgoverness
++hallowedcoalore
++throbluge
++hardtofindeasy
++extensionpastie
++hamburgerable
++navelgaloshes
++lardhead
++choicenativity
++grotesquefragrant
++asianslab
++stylishcurrent
++caninto
++spritecardigan
++spongepointed
++soothepaperclips
++symbolsmight
++lateconcert
++liggersqueak
++wooficecream
++camelregardless
++infieldaid
++robusttrout
++successdeceive
++sentirritated
++parliamentfrosty
++pantmalicious
++travelerraspy
++threadstake
++fickleacclaimed
++agonizingmarvel
++forebittpituitary
++cautiouschow
++resolutefound
++roachunkempt
++developingaltruistic
++decathlonemphasize
++grovealter
++columnrepeater
++cityalmonds
++employmentcanon
++packagainst
++murmervulture
++rightcode
++abjectscrap
++beautycloistered
++pedalpossessive
++conceptdickhead
++knobbymazipan
++itchdisorder
++sidelightimmature
++adjoiningbasil
++carpuscarol
++severlonely
++mindconfusion
++vagarydefend
++lacebedroom
++downhelp
++suicidebasketball
++foregoingtok
++sheepishban
++shadesboyscouts
++rapidlypatience
++leavescyclone
++totalorganize
++cheeseburgerprosecutor
++irritablegloomy
++sadgreat
++sourcecaroling
++contenttend
++slightlyeek
++grizzledbest
++magnetmeatball
++sullenlie
++sweepquit
++collarcherry
++followingdry
++organizeturmeric
++observantsink
++muumuupitcher
++squalidbogeyman
++attackshorts
++galoshesroom
++heartyclose
++attendstream
++ablazejumprope
++turbulentcheeseburger
++dnathrob
++speckledtower
++contributewonder
++fifthwant
++sharpnessstrawberries
++useunlike
++podiatristpostulate
++denyoverall
++satisfyshampoo
++wardcockatoo
++frameworkgrab
++pattofu
++picklesprismarine
++hippiesputter
++wrathfulescutcheon
++shetrivial
++ancientawareness
++flannelsspeedboat
++theeverywhere
++villageglobal
++kaabadealer
++becomingcast
++macadamiasplat
++oddballpass
++confidencelung
++victoriousidolized
++floodcarbon
++artistegroup
++impishthere
++printefficient
++omniscientjoyeux
++camouflagebrood
++convincewedding
++unrulyevening
++clearwingloving
++trackpresent
++occasionwaistcoat
++cashieradopt
++realbib
++outconfirm
++trusteedynamic
++delightfoxglove
++lettervisible
++unselfishrolex
++oryxromp
++messengervenal
++guccitailed
++restroomseveral
++poontanggreet
++bartertrait
++housingtoucan
++whistleapprove
++demandingfrap
++capriciousoxeye
++hastinesshearty
++whitingerratic
++beretinvincible
++doggerpublicly
++planettartary
++awesomespill
++estuarineraspberries
++bookbellbottoms
++taluslog
++rofltweed
++laganspinach
++crochetlacking
++motherlyglint
++butternutaspiring
++trogleanguished
++curlewboink
++forestterracotta
++rememberhabit
++recoverytuna
++quiltswing
++fraymargin
++sundresscoalition
++democraticmessage
++mistyballaster
++fortunatefear
++doesinclude
++intolerantper
++accomplishburnet
++scopepersonal
++impolitefreak
++dioriteterrify
++assurelancome
++sausagesquail
++paragraphgrand
++deafeningcourt
++porkchopcurry
++executivestarbucks
++wateramong
++sesametortoise
++hopimpressive
++selectstand
++headlinebelted
++porchmews
++immaculatederanged
++apparentlysure
++boobyfiction
++visibleceremonious
++overduetiresome
++seriesgain
++cherryarrival
++heinekenwholesale
++yawningdare
++Sysgatic
++BaseReader
++Doodlent
++Darket
++CartBox
++Issuetaga
++BauerLou
++PureRelax
++Combedvil
++Darthly
++PurpleCooled
++Downholo
++WordsWolfie
++Bulletingici
++Celloeba
++Lovesag
++SoccerScan
++Soeshe
++Ovankeda
++WackyWolfie
++InloveMans
++Propobl
++Quarris
++Rocketic
++RapFalls
++DarkFarer
++Ninjayees
++Chooseis
++BoardinCorny
++Apolstra
++Olefina
++Corence
++SportsAholic
++Roserv
++Softects
++Cominast
++Morapern
++Tinsen
++StandDown
+Index: stress_tests/collections/community_titles
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/collections/community_titles b/stress_tests/collections/community_titles
+new file mode 100644
+--- /dev/null	(date 1665414605445)
++++ b/stress_tests/collections/community_titles	(date 1665414605445)
+@@ -0,0 +1,60 @@
++fascinating nutriments who eat
++The intoxicating subsistence eaters
++inspirational food who eat
++The moving food gobblers
++mind-boggling sustenances
++heart-stopping feeds
++stimulating foods who eat
++The thrilling fodder gobblers
++spirited feeds who eat
++hair-raising sustenances who eat
++The gripping bread off finishers
++dramatic forages who eat
++The hair-raising food consumers
++hair-raising nourishments
++gripping fares who eat
++spirited forages
++The animated forage bolters
++emotional subsistences
++rip-roaring foods who eat
++hair-raising feeds who eat
++inspiring nutriments
++gripping nutriments who eat
++soul-stirring sustenances
++The emotional sustenance devourers
++The heady sustenance bolters
++The fascinating nutriment bolters
++The mind-bending food ingesters
++mind-boggling foods who eat
++lively sustenances
++gripping feeds
++The competetive programing out layers
++aggressive programings who program
++aggressive programings
++The competetive programing liners
++competetive programings
++competetive programings who program
++merciless programings
++The ruthless programing schedulers
++The fierce programing schedulers
++The ruthless programing coders
++The aggressive programing out mappers
++competetive programing who program
++The ruthless programing organizers
++The aggressive programing liners
++The fierce programing out mappers
++The merciless programing schedulers
++ruthless programings
++fierce programings
++fierce programings who program
++The fierce programing out layers
++The merciless programing timetablers
++ruthless programings who program
++The competetive programing arrangers
++The fierce programing programmers
++merciless programings who program
++The aggressive programing coders
++The fierce programing liners
++The merciless programing programmers
++The merciless programing coders
++The aggressive programing timetablers
+\ No newline at end of file
+Index: stress_tests/collections/lorem_ipsum
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/collections/lorem_ipsum b/stress_tests/collections/lorem_ipsum
+new file mode 100644
+--- /dev/null	(date 1665414897833)
++++ b/stress_tests/collections/lorem_ipsum	(date 1665414897833)
+@@ -0,0 +1,5 @@
++Lorem ipsum dolor sit amet, consectetur adipiscing elit. Proin dignissim interdum enim nec sagittis. Nam eget magna eget metus condimentum tincidunt. Aenean non nunc rhoncus, eleifend nisi vitae, lacinia purus. Vestibulum ante urna, venenatis eget lectus in, blandit sagittis ex. Suspendisse porta risus eget felis ultricies, ut malesuada leo malesuada. Integer ligula sem, malesuada quis risus quis, scelerisque dignissim mauris. Nam et aliquet ante. Maecenas eget tincidunt massa. Nunc accumsan condimentum dolor. Nulla feugiat efficitur nisl sed mattis. Sed tincidunt suscipit libero, non rhoncus elit sagittis eu.
++In hac habitasse platea dictumst. Sed nec magna in mauris porttitor bibendum. Nulla ultrices viverra augue, ullamcorper lacinia leo. Etiam blandit pharetra sem, ac pulvinar dolor semper quis. In ornare ex at nisl congue feugiat. Aliquam cursus porttitor purus sed accumsan. Ut aliquam hendrerit tellus, ut maximus ante cursus a. Sed vehicula velit sed nisi interdum iaculis. Vivamus elementum est eu sapien molestie, quis dignissim orci congue. Donec ut nunc eget diam feugiat tincidunt. Nulla facilisi. In id vestibulum lorem
++Maecenas ut eros non nulla venenatis interdum. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Phasellus id est eleifend, dapibus sapien sit amet, placerat nunc. Aliquam erat volutpat. Donec justo mauris, lobortis sed diam at, bibendum aliquet velit. Praesent fringilla vestibulum urna, sit amet tempus sem. Nulla ac porta mi, id auctor enim. Integer interdum dolor sapien, id ornare tellus posuere sed. Curabitur ut libero tellus. Vivamus consequat interdum viverra. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Morbi condimentum tortor a ante molestie porta. Aenean vehicula velit eget dolor tempus, eget aliquet augue convallis. In lobortis, lorem facilisis porttitor feugiat, ex enim interdum est, ac egestas nulla massa vel ante. Integer a eleifend ex.
++Vivamus pharetra gravida efficitur. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed interdum erat non turpis facilisis, quis pulvinar tellus semper. Orci varius natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Curabitur et sollicitudin neque. Fusce id lorem ut risus aliquet auctor. Sed viverra lorem tellus, et lacinia dui imperdiet ac. Donec rutrum dapibus magna a pulvinar. Quisque semper dui eget hendrerit ultricies. Nunc ut erat ornare, facilisis sapien tristique, blandit arcu. Duis volutpat, arcu fringilla maximus placerat, risus augue mattis tellus, auctor accumsan dui arcu sed lacus. Integer malesuada auctor blandit.
++In hac habitasse platea dictumst. Aliquam rhoncus turpis ut nisi vulputate dignissim. Pellentesque varius neque velit. Quisque id nibh iaculis, fermentum orci eu, euismod lectus. Morbi magna quam, lobortis at bibendum a, condimentum in mi. Fusce ex arcu, imperdiet vulputate nisi non, laoreet feugiat orci. Phasellus non lacus placerat, dapibus eros non, hendrerit sem. Aenean rhoncus porta semper. Nunc pharetra ante et massa malesuada, non finibus nibh tempus. Curabitur nec est nec tellus laoreet sodales vitae eget elit. Fusce at diam quis eros finibus ultrices eu in felis. Vestibulum consequat turpis ac pellentesque consectetur. Fusce ac tincidunt urna. Curabitur pharetra odio neque, ac tincidunt felis cursus vitae.
+\ No newline at end of file
+Index: stress_tests/generators/content_generator.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/generators/content_generator.py b/stress_tests/generators/content_generator.py
+new file mode 100644
+--- /dev/null	(date 1665432079603)
++++ b/stress_tests/generators/content_generator.py	(date 1665432079603)
+@@ -0,0 +1,15 @@
++from typing import Type
++
++from django.db.models import Model
++
++
++class ModelGenerator:
++    last_id: int
++    model: Type[Model]
++
++    def __init__(self, model: Type[Model]) -> None:
++        self.model = model
++        self.last_id = self.model.objects.all().last().id if self.model.objects.all().exists() else 0
++
++    def generate(self, number: int, **kwargs) -> list['ModelGenerator.model']:
++        raise NotImplementedError()
+Index: .idea/workspace.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<project version=\"4\">\r\n  <component name=\"ChangeListManager\">\r\n    <list default=\"true\" id=\"1ba83de6-5375-4368-a5a6-a998b32f7dda\" name=\"Changes\" comment=\"\">\r\n      <change beforePath=\"$PROJECT_DIR$/.idea/workspace.xml\" beforeDir=\"false\" afterPath=\"$PROJECT_DIR$/.idea/workspace.xml\" afterDir=\"false\" />\r\n      <change beforePath=\"$PROJECT_DIR$/blog/pagination.py\" beforeDir=\"false\" afterPath=\"$PROJECT_DIR$/blog/pagination.py\" afterDir=\"false\" />\r\n      <change beforePath=\"$PROJECT_DIR$/subjects/models.py\" beforeDir=\"false\" afterPath=\"$PROJECT_DIR$/subjects/models.py\" afterDir=\"false\" />\r\n    </list>\r\n    <option name=\"SHOW_DIALOG\" value=\"false\" />\r\n    <option name=\"HIGHLIGHT_CONFLICTS\" value=\"true\" />\r\n    <option name=\"HIGHLIGHT_NON_ACTIVE_CHANGELIST\" value=\"false\" />\r\n    <option name=\"LAST_RESOLUTION\" value=\"IGNORE\" />\r\n  </component>\r\n  <component name=\"DjangoConsoleOptions\" custom-start-script=\"import sys; print('Python %s on %s' % (sys.version, sys.platform))&#10;import django; print('Django %s' % django.get_version())&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;if 'setup' in dir(django): django.setup()&#10;import django_manage_shell; django_manage_shell.run(PROJECT_ROOT)\">\r\n    <option name=\"myCustomStartScript\" value=\"import sys; print('Python %s on %s' % (sys.version, sys.platform))&#10;import django; print('Django %s' % django.get_version())&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;if 'setup' in dir(django): django.setup()&#10;import django_manage_shell; django_manage_shell.run(PROJECT_ROOT)\" />\r\n  </component>\r\n  <component name=\"Git.Settings\">\r\n    <option name=\"RECENT_GIT_ROOT_PATH\" value=\"$PROJECT_DIR$/../..\" />\r\n  </component>\r\n  <component name=\"GitSEFilterConfiguration\">\r\n    <file-type-list>\r\n      <filtered-out-file-type name=\"LOCAL_BRANCH\" />\r\n      <filtered-out-file-type name=\"REMOTE_BRANCH\" />\r\n      <filtered-out-file-type name=\"TAG\" />\r\n      <filtered-out-file-type name=\"COMMIT_BY_MESSAGE\" />\r\n    </file-type-list>\r\n  </component>\r\n  <component name=\"MarkdownSettingsMigration\">\r\n    <option name=\"stateVersion\" value=\"1\" />\r\n  </component>\r\n  <component name=\"ProjectId\" id=\"2FSPTo1Lq4FaPK12GBIWwNWU3Bd\" />\r\n  <component name=\"ProjectLevelVcsManager\" settingsEditedManually=\"true\" />\r\n  <component name=\"ProjectViewState\">\r\n    <option name=\"autoscrollToSource\" value=\"true\" />\r\n    <option name=\"hideEmptyMiddlePackages\" value=\"true\" />\r\n    <option name=\"showLibraryContents\" value=\"true\" />\r\n    <option name=\"showMembers\" value=\"true\" />\r\n  </component>\r\n  <component name=\"PropertiesComponent\">\r\n    <property name=\"RunOnceActivity.OpenProjectViewOnStart\" value=\"true\" />\r\n    <property name=\"RunOnceActivity.ShowReadmeOnStart\" value=\"true\" />\r\n    <property name=\"WebServerToolWindowFactoryState\" value=\"false\" />\r\n  </component>\r\n  <component name=\"RunManager\" selected=\"Python.clean\">\r\n    <configuration name=\"clean\" type=\"PythonConfigurationType\" factoryName=\"Python\" temporary=\"true\" nameIsGenerated=\"true\">\r\n      <module name=\"app\" />\r\n      <option name=\"INTERPRETER_OPTIONS\" value=\"\" />\r\n      <option name=\"PARENT_ENVS\" value=\"true\" />\r\n      <envs>\r\n        <env name=\"PYTHONUNBUFFERED\" value=\"1\" />\r\n      </envs>\r\n      <option name=\"SDK_HOME\" value=\"\" />\r\n      <option name=\"WORKING_DIRECTORY\" value=\"$PROJECT_DIR$\" />\r\n      <option name=\"IS_MODULE_SDK\" value=\"true\" />\r\n      <option name=\"ADD_CONTENT_ROOTS\" value=\"true\" />\r\n      <option name=\"ADD_SOURCE_ROOTS\" value=\"true\" />\r\n      <EXTENSION ID=\"PythonCoverageRunConfigurationExtension\" runner=\"coverage.py\" />\r\n      <option name=\"SCRIPT_NAME\" value=\"$PROJECT_DIR$/clean.py\" />\r\n      <option name=\"PARAMETERS\" value=\"\" />\r\n      <option name=\"SHOW_COMMAND_LINE\" value=\"false\" />\r\n      <option name=\"EMULATE_TERMINAL\" value=\"false\" />\r\n      <option name=\"MODULE_MODE\" value=\"false\" />\r\n      <option name=\"REDIRECT_INPUT\" value=\"false\" />\r\n      <option name=\"INPUT_FILE\" value=\"\" />\r\n      <method v=\"2\" />\r\n    </configuration>\r\n    <configuration name=\"app\" type=\"Python.DjangoServer\" factoryName=\"Django server\">\r\n      <module name=\"app\" />\r\n      <option name=\"INTERPRETER_OPTIONS\" value=\"\" />\r\n      <option name=\"PARENT_ENVS\" value=\"true\" />\r\n      <envs>\r\n        <env name=\"PYTHONUNBUFFERED\" value=\"1\" />\r\n        <env name=\"DJANGO_SETTINGS_MODULE\" value=\"sylvest_django.settings\" />\r\n      </envs>\r\n      <option name=\"SDK_HOME\" value=\"\" />\r\n      <option name=\"WORKING_DIRECTORY\" value=\"\" />\r\n      <option name=\"IS_MODULE_SDK\" value=\"false\" />\r\n      <option name=\"ADD_CONTENT_ROOTS\" value=\"true\" />\r\n      <option name=\"ADD_SOURCE_ROOTS\" value=\"true\" />\r\n      <option name=\"launchJavascriptDebuger\" value=\"false\" />\r\n      <option name=\"port\" value=\"8000\" />\r\n      <option name=\"host\" value=\"\" />\r\n      <option name=\"additionalOptions\" value=\"\" />\r\n      <option name=\"browserUrl\" value=\"\" />\r\n      <option name=\"runTestServer\" value=\"false\" />\r\n      <option name=\"runNoReload\" value=\"false\" />\r\n      <option name=\"useCustomRunCommand\" value=\"false\" />\r\n      <option name=\"customRunCommand\" value=\"\" />\r\n      <method v=\"2\" />\r\n    </configuration>\r\n    <recent_temporary>\r\n      <list>\r\n        <item itemvalue=\"Python.clean\" />\r\n      </list>\r\n    </recent_temporary>\r\n  </component>\r\n  <component name=\"SpellCheckerSettings\" RuntimeDictionaries=\"0\" Folders=\"0\" CustomDictionaries=\"0\" DefaultDictionary=\"application-level\" UseSingleDictionary=\"true\" transferred=\"true\" />\r\n  <component name=\"TaskManager\">\r\n    <task active=\"true\" id=\"Default\" summary=\"Default task\">\r\n      <changelist id=\"1ba83de6-5375-4368-a5a6-a998b32f7dda\" name=\"Changes\" comment=\"\" />\r\n      <created>1664482522169</created>\r\n      <option name=\"number\" value=\"Default\" />\r\n      <option name=\"presentableId\" value=\"Default\" />\r\n      <updated>1664482522169</updated>\r\n      <workItem from=\"1664482523337\" duration=\"27673000\" />\r\n    </task>\r\n    <servers />\r\n  </component>\r\n  <component name=\"TypeScriptGeneratedFilesManager\">\r\n    <option name=\"version\" value=\"3\" />\r\n  </component>\r\n  <component name=\"Vcs.Log.Tabs.Properties\">\r\n    <option name=\"TAB_STATES\">\r\n      <map>\r\n        <entry key=\"MAIN\">\r\n          <value>\r\n            <State />\r\n          </value>\r\n        </entry>\r\n      </map>\r\n    </option>\r\n  </component>\r\n  <component name=\"com.intellij.coverage.CoverageDataManagerImpl\">\r\n    <SUITE FILE_PATH=\"coverage/app$clean.coverage\" NAME=\"clean Coverage Results\" MODIFIED=\"1664487859364\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"true\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n  </component>\r\n</project>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/.idea/workspace.xml b/.idea/workspace.xml
+--- a/.idea/workspace.xml	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/.idea/workspace.xml	(date 1665439688903)
+@@ -2,9 +2,86 @@
+ <project version="4">
+   <component name="ChangeListManager">
+     <list default="true" id="1ba83de6-5375-4368-a5a6-a998b32f7dda" name="Changes" comment="">
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/community_titles" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/links" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/lorem_ipsum" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/random_photo_downloader.py" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_1.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_10.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_11.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_12.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_13.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_14.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_15.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_16.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_17.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_18.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_19.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_2.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_20.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_21.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_22.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_23.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_24.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_25.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_26.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_27.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_28.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_29.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_3.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_30.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_31.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_32.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_33.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_34.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_35.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_36.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_37.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_38.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_39.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_4.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_40.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_41.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_42.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_43.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_44.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_45.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_46.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_47.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_48.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_49.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_5.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_50.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_6.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_7.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_8.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/photos/sample_photo_9.jpg" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/post_titles" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/usernames" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/videos/pexels-cottonbro-5532772.mp4" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/videos/pexels-pavel-danilyuk-7580023.mp4" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/videos/pexels-thirdman-5538137.mp4" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/videos/production ID 3755542.mp4" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/videos/production ID 4124024.mp4" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/videos/production ID 4124035.mp4" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/collections/videos/video.mp4" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/generators/community_generator.py" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/generators/content_generator.py" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/generators/follow_generator.py" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/generators/member_generator.py" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/generators/random_generators.py" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/generators/user_generator.py" afterDir="false" />
++      <change afterPath="$PROJECT_DIR$/stress_tests/stress_tester.py" afterDir="false" />
+       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+-      <change beforePath="$PROJECT_DIR$/blog/pagination.py" beforeDir="false" afterPath="$PROJECT_DIR$/blog/pagination.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/chain/level.py" beforeDir="false" afterPath="$PROJECT_DIR$/chain/level.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/chain/serializers.py" beforeDir="false" afterPath="$PROJECT_DIR$/chain/serializers.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/chat/serializers.py" beforeDir="false" afterPath="$PROJECT_DIR$/chat/serializers.py" afterDir="false" />
+       <change beforePath="$PROJECT_DIR$/subjects/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/subjects/models.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/subjects/serializers.py" beforeDir="false" afterPath="$PROJECT_DIR$/subjects/serializers.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/subjects/views.py" beforeDir="false" afterPath="$PROJECT_DIR$/subjects/views.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/sylvest_django/settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/sylvest_django/settings.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/../../sylvest_flutter/lib/discover/components/discover_components.dart" beforeDir="false" afterPath="$PROJECT_DIR$/../../sylvest_flutter/lib/discover/components/discover_components.dart" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/../../sylvest_flutter/lib/services/image_service.dart" beforeDir="false" afterPath="$PROJECT_DIR$/../../sylvest_flutter/lib/services/image_service.dart" afterDir="false" />
+     </list>
+     <option name="SHOW_DIALOG" value="false" />
+     <option name="HIGHLIGHT_CONFLICTS" value="true" />
+@@ -13,6 +90,13 @@
+   </component>
+   <component name="DjangoConsoleOptions" custom-start-script="import sys; print('Python %s on %s' % (sys.version, sys.platform))&#10;import django; print('Django %s' % django.get_version())&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;if 'setup' in dir(django): django.setup()&#10;import django_manage_shell; django_manage_shell.run(PROJECT_ROOT)">
+     <option name="myCustomStartScript" value="import sys; print('Python %s on %s' % (sys.version, sys.platform))&#10;import django; print('Django %s' % django.get_version())&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;if 'setup' in dir(django): django.setup()&#10;import django_manage_shell; django_manage_shell.run(PROJECT_ROOT)" />
++  </component>
++  <component name="FileTemplateManagerImpl">
++    <option name="RECENT_TEMPLATES">
++      <list>
++        <option value="Python Script" />
++      </list>
++    </option>
+   </component>
+   <component name="Git.Settings">
+     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/../.." />
+@@ -40,8 +124,19 @@
+     <property name="RunOnceActivity.OpenProjectViewOnStart" value="true" />
+     <property name="RunOnceActivity.ShowReadmeOnStart" value="true" />
+     <property name="WebServerToolWindowFactoryState" value="false" />
++    <property name="last_opened_file_path" value="$PROJECT_DIR$/tests/collections" />
++  </component>
++  <component name="RecentsManager">
++    <key name="CopyFile.RECENT_KEYS">
++      <recent name="C:\Users\RYZEN\Desktop\codes\Sylvest\alpha_1_local\42-Repository\sylvest_django\app\tests\collections" />
++    </key>
++    <key name="MoveFile.RECENT_KEYS">
++      <recent name="C:\Users\RYZEN\Desktop\codes\Sylvest\alpha_1_local\42-Repository\sylvest_django\app\tests\generators" />
++      <recent name="C:\Users\RYZEN\Desktop\codes\Sylvest\alpha_1_local\42-Repository\sylvest_django\app\tests\collections\photos" />
++      <recent name="C:\Users\RYZEN\Desktop\codes\Sylvest\alpha_1_local\42-Repository\sylvest_django\app\tests\collections" />
++    </key>
+   </component>
+-  <component name="RunManager" selected="Python.clean">
++  <component name="RunManager" selected="Python.stress_tester (1)">
+     <configuration name="clean" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+       <module name="app" />
+       <option name="INTERPRETER_OPTIONS" value="" />
+@@ -64,6 +159,72 @@
+       <option name="INPUT_FILE" value="" />
+       <method v="2" />
+     </configuration>
++    <configuration name="random_photo_downloader" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
++      <module name="app" />
++      <option name="INTERPRETER_OPTIONS" value="" />
++      <option name="PARENT_ENVS" value="true" />
++      <envs>
++        <env name="PYTHONUNBUFFERED" value="1" />
++      </envs>
++      <option name="SDK_HOME" value="" />
++      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/tests" />
++      <option name="IS_MODULE_SDK" value="true" />
++      <option name="ADD_CONTENT_ROOTS" value="true" />
++      <option name="ADD_SOURCE_ROOTS" value="true" />
++      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
++      <option name="SCRIPT_NAME" value="C:\Users\RYZEN\Desktop\codes\Sylvest\alpha_1_local\42-Repository\sylvest_django\app\tests\collections\photos\random_photo_downloader.py" />
++      <option name="PARAMETERS" value="" />
++      <option name="SHOW_COMMAND_LINE" value="false" />
++      <option name="EMULATE_TERMINAL" value="false" />
++      <option name="MODULE_MODE" value="false" />
++      <option name="REDIRECT_INPUT" value="false" />
++      <option name="INPUT_FILE" value="" />
++      <method v="2" />
++    </configuration>
++    <configuration name="stress_tester (1)" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
++      <module name="app" />
++      <option name="INTERPRETER_OPTIONS" value="" />
++      <option name="PARENT_ENVS" value="true" />
++      <envs>
++        <env name="PYTHONUNBUFFERED" value="1" />
++      </envs>
++      <option name="SDK_HOME" value="" />
++      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/stress_tests" />
++      <option name="IS_MODULE_SDK" value="true" />
++      <option name="ADD_CONTENT_ROOTS" value="true" />
++      <option name="ADD_SOURCE_ROOTS" value="true" />
++      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
++      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/stress_tests/stress_tester.py" />
++      <option name="PARAMETERS" value="" />
++      <option name="SHOW_COMMAND_LINE" value="false" />
++      <option name="EMULATE_TERMINAL" value="false" />
++      <option name="MODULE_MODE" value="false" />
++      <option name="REDIRECT_INPUT" value="false" />
++      <option name="INPUT_FILE" value="" />
++      <method v="2" />
++    </configuration>
++    <configuration name="stress_tester" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
++      <module name="app" />
++      <option name="INTERPRETER_OPTIONS" value="" />
++      <option name="PARENT_ENVS" value="true" />
++      <envs>
++        <env name="PYTHONUNBUFFERED" value="1" />
++      </envs>
++      <option name="SDK_HOME" value="" />
++      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/tests" />
++      <option name="IS_MODULE_SDK" value="true" />
++      <option name="ADD_CONTENT_ROOTS" value="true" />
++      <option name="ADD_SOURCE_ROOTS" value="true" />
++      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
++      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/tests/stress_tester.py" />
++      <option name="PARAMETERS" value="" />
++      <option name="SHOW_COMMAND_LINE" value="false" />
++      <option name="EMULATE_TERMINAL" value="false" />
++      <option name="MODULE_MODE" value="false" />
++      <option name="REDIRECT_INPUT" value="false" />
++      <option name="INPUT_FILE" value="" />
++      <method v="2" />
++    </configuration>
+     <configuration name="app" type="Python.DjangoServer" factoryName="Django server">
+       <module name="app" />
+       <option name="INTERPRETER_OPTIONS" value="" />
+@@ -90,6 +251,9 @@
+     </configuration>
+     <recent_temporary>
+       <list>
++        <item itemvalue="Python.stress_tester (1)" />
++        <item itemvalue="Python.stress_tester" />
++        <item itemvalue="Python.random_photo_downloader" />
+         <item itemvalue="Python.clean" />
+       </list>
+     </recent_temporary>
+@@ -102,7 +266,7 @@
+       <option name="number" value="Default" />
+       <option name="presentableId" value="Default" />
+       <updated>1664482522169</updated>
+-      <workItem from="1664482523337" duration="27673000" />
++      <workItem from="1664482523337" duration="50667000" />
+     </task>
+     <servers />
+   </component>
+@@ -122,5 +286,8 @@
+   </component>
+   <component name="com.intellij.coverage.CoverageDataManagerImpl">
+     <SUITE FILE_PATH="coverage/app$clean.coverage" NAME="clean Coverage Results" MODIFIED="1664487859364" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
++    <SUITE FILE_PATH="coverage/app$stress_tester.coverage" NAME="stress_tester Coverage Results" MODIFIED="1665423606349" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/tests" />
++    <SUITE FILE_PATH="coverage/app$random_photo_downloader.coverage" NAME="random_photo_downloader Coverage Results" MODIFIED="1665415873895" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/tests" />
++    <SUITE FILE_PATH="coverage/app$stress_tester__1_.coverage" NAME="stress_tester (1) Coverage Results" MODIFIED="1665435649268" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/stress_tests" />
+   </component>
+ </project>
+\ No newline at end of file
+Index: ../../sylvest_flutter/lib/services/image_service.dart
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import 'package:cached_network_image/cached_network_image.dart';\r\nimport 'package:flutter/material.dart';\r\nimport 'package:sylvest_flutter/config/env.dart';\r\nimport 'package:sylvest_flutter/home/main_components.dart';\r\n\r\nclass SylvestImage extends StatelessWidget {\r\n  final String? url;\r\n  final bool useDefault;\r\n  final double? width;\r\n  final double? height;\r\n\r\n  const SylvestImage(\r\n      {Key? key,\r\n      required this.url,\r\n      required this.useDefault,\r\n      this.width,\r\n      this.height})\r\n      : super(key: key);\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return CachedNetworkImage(\r\n      imageUrl: url != null ? url! : \"\",\r\n      fit: BoxFit.cover,\r\n      height: height,\r\n      width: width,\r\n      placeholder: (context, url) => useDefault\r\n          ? Image.asset(\r\n              \"assets/images/defaultB.jpg\",\r\n              fit: BoxFit.cover,\r\n              height: height,\r\n              width: width,\r\n            )\r\n          : LoadingIndicator(),\r\n      errorWidget: (context, url, error) => Image.asset(\r\n        \"assets/images/defaultB.jpg\",\r\n        fit: BoxFit.cover,\r\n        height: height,\r\n        width: width,\r\n      ),\r\n    );\r\n  }\r\n}\r\n\r\nclass SylvestImageProvider extends StatelessWidget {\r\n  final String? url;\r\n  final double? radius;\r\n\r\n  const SylvestImageProvider({Key? key, required this.url, this.radius})\r\n      : super(key: key);\r\n\r\n  @override\r\n  Widget build(BuildContext context) {\r\n    return CircleAvatar(\r\n      foregroundImage: url == null\r\n          ? null\r\n          : CachedNetworkImageProvider(\r\n              url!.contains(\"http\") ? url! : Env.BASE_URL_PREFIX + url!),\r\n      backgroundImage: AssetImage(\"assets/images/defaultP.png\"),\r\n      backgroundColor: Colors.black12,\r\n      radius: radius,\r\n    );\r\n  }\r\n}\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/../../sylvest_flutter/lib/services/image_service.dart b/../../sylvest_flutter/lib/services/image_service.dart
+--- a/../../sylvest_flutter/lib/services/image_service.dart	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/../../sylvest_flutter/lib/services/image_service.dart	(date 1665413199513)
+@@ -8,6 +8,8 @@
+   final bool useDefault;
+   final double? width;
+   final double? height;
++  final BoxFit boxFit = BoxFit.cover;
++  final String assetImage = "assets/images/defaultB.jpg";
+ 
+   const SylvestImage(
+       {Key? key,
+@@ -19,21 +21,26 @@
+ 
+   @override
+   Widget build(BuildContext context) {
+-    return CachedNetworkImage(
+-      imageUrl: url != null ? url! : "",
++    return url == null ? Image.asset(
++      assetImage,
++      fit: boxFit,
++      height: height,
++      width: width,
++    ) : CachedNetworkImage(
++      imageUrl: url!,
+       fit: BoxFit.cover,
+       height: height,
+       width: width,
+       placeholder: (context, url) => useDefault
+           ? Image.asset(
+-              "assets/images/defaultB.jpg",
++              assetImage,
+               fit: BoxFit.cover,
+               height: height,
+               width: width,
+             )
+           : LoadingIndicator(),
+       errorWidget: (context, url, error) => Image.asset(
+-        "assets/images/defaultB.jpg",
++        assetImage,
+         fit: BoxFit.cover,
+         height: height,
+         width: width,
+Index: sylvest_django/settings.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>\"\"\"\r\nDjango settings for sylvest_django project.\r\n\r\nGenerated by 'django-admin startproject' using Django 3.2.7.\r\n\r\nFor more information on this file, see\r\nhttps://docs.djangoproject.com/en/3.2/topics/settings/\r\n\r\nFor the full list of settings and their values, see\r\nhttps://docs.djangoproject.com/en/3.2/ref/settings/\r\n\"\"\"\r\n\r\nfrom pathlib import Path\r\nimport firebase_admin\r\nfrom datetime import timedelta\r\nimport configuration\r\nimport os\r\n\r\n# Build paths inside the project like this: BASE_DIR / 'subdir'.\r\nBASE_DIR = Path(__file__).resolve().parent.parent\r\n\r\n# Quick-start development settings - unsuitable for production\r\n# See https://docs.djangoproject.com/en/3.2/howto/deployment/checklist/\r\n\r\n# SECURITY WARNING: keep the secret key used in production secret!\r\nSECRET_KEY = configuration.SECRET_KEY\r\n\r\n# SECURITY WARNING: don't run with debug turned on in production!\r\nDEBUG = True\r\n\r\nALLOWED_HOSTS = ['*']\r\nCSRF_TRUSTED_ORIGINS = [\r\n    'https://sylvest-pre-alpha-1.herokuapp.com'\r\n]\r\n\r\n# Application definition\r\n\r\nINSTALLED_APPS = [\r\n    'blog.apps.BlogConfig',\r\n    'api.apps.ApiConfig',\r\n    'clientAuth.apps.ClientauthConfig',\r\n    'subjects.apps.SubjectsConfig',\r\n    'chat.apps.ChatConfig',\r\n    'chain.apps.ChainConfig',\r\n    'recommender.apps.RecommenderConfig',\r\n    'django.contrib.admin',\r\n    'django.contrib.auth',\r\n    'django.contrib.contenttypes',\r\n    'django.contrib.sessions',\r\n    'django.contrib.messages',\r\n    'django.contrib.staticfiles',\r\n    'django.contrib.postgres',\r\n    'rest_framework',\r\n    'dj_rest_auth',\r\n    'rest_framework.authtoken',\r\n    'django.contrib.sites',\r\n    'allauth',\r\n    'allauth.account',\r\n    'allauth.socialaccount',\r\n    'dj_rest_auth.registration',\r\n    'allauth.socialaccount.providers.facebook',\r\n    'allauth.socialaccount.providers.google',\r\n    'rest_framework_simplejwt',\r\n    'location_field.apps.DefaultConfig',\r\n    \"corsheaders\",\r\n    'channels',\r\n    'django_filters',\r\n    \"fcm_django\",\r\n]\r\n\r\nSITE_ID = 1\r\n\r\nREST_FRAMEWORK = {\r\n    'DEFAULT_AUTHENTICATION_CLASSES': [\r\n        'rest_framework.authentication.BasicAuthentication',\r\n        'rest_framework.authentication.SessionAuthentication',\r\n        'rest_framework_simplejwt.authentication.JWTAuthentication',\r\n        'dj_rest_auth.jwt_auth.JWTCookieAuthentication',\r\n    ],\r\n    'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],\r\n    # 'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',\r\n    # 'PAGE_SIZE': 100\r\n}\r\n\r\n# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'\r\nEMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'\r\nEMAIL_HOST = 'smtp.gmail.com'\r\nEMAIL_PORT = 587\r\nEMAIL_USE_TLS = True\r\nEMAIL_HOST_USER = \"sylvestapp@gmail.com\"\r\nEMAIL_HOST_PASSWORD = \"scfnfawdrkjdwxzt\"\r\nDEFAULT_FROM_EMAIL = 'noreply<no_reply@domain.com>'\r\n\r\nREST_USE_JWT = True\r\nJWT_AUTH_COOKIE = 'auth'\r\nJWT_AUTH_REFRESH_COOKIE = 'refresh-token'\r\n\r\nMIDDLEWARE = [\r\n    'django.middleware.security.SecurityMiddleware',\r\n    'django.contrib.sessions.middleware.SessionMiddleware',\r\n    'django.middleware.common.CommonMiddleware',\r\n    'django.middleware.csrf.CsrfViewMiddleware',\r\n    'django.contrib.auth.middleware.AuthenticationMiddleware',\r\n    'django.contrib.messages.middleware.MessageMiddleware',\r\n    'django.middleware.clickjacking.XFrameOptionsMiddleware',\r\n    \"corsheaders.middleware.CorsMiddleware\",\r\n]\r\n\r\nSTATICFILES_STORAGE = \"whitenoise.storage.CompressedManifestStaticFilesStorage\"\r\n\r\nCORS_ORIGIN_ALLOW_ALL = True\r\n\r\nROOT_URLCONF = 'sylvest_django.urls'\r\n\r\nTEMPLATES = [\r\n    {\r\n        'BACKEND': 'django.template.backends.django.DjangoTemplates',\r\n        'DIRS': [],\r\n        'APP_DIRS': True,\r\n        'OPTIONS': {\r\n            'context_processors': [\r\n                'django.template.context_processors.debug',\r\n                'django.template.context_processors.request',\r\n                'django.contrib.auth.context_processors.auth',\r\n                'django.contrib.messages.context_processors.messages',\r\n            ],\r\n        },\r\n    },\r\n]\r\n\r\nASGI_APPLICATION = 'sylvest_django.asgi.application'\r\nWSGI_APPLICATION = 'sylvest_django.wsgi.application'\r\n\r\nFIREBASE_CREDENTIALS = firebase_admin.credentials.Certificate(r\"./sylvestFirebase.json\")\r\nFIREBASE_APP = firebase_admin.initialize_app(FIREBASE_CREDENTIALS)\r\n\r\nFCM_DJANGO_SETTINGS = {\r\n    # default: _('FCM Django')\r\n    \"APP_VERBOSE_NAME\": \"FCM Sylvest\",\r\n    # true if you want to have only one active device per registered user at a time\r\n    # default: False\r\n    \"ONE_DEVICE_PER_USER\": False,\r\n    # devices to which notifications cannot be sent,\r\n    # are deleted upon receiving error response from FCM\r\n    # default: False\r\n    \"DELETE_INACTIVE_DEVICES\": False,\r\n    # Transform create of an existing Device (based on registration id) into\r\n    # an update. See the section\r\n    # \"Update of device with duplicate registration ID\" for more details.\r\n    \"UPDATE_ON_DUPLICATE_REG_ID\": False,\r\n}\r\n\r\nCHANNEL_LAYERS = {\r\n    'default': {\r\n        'BACKEND': 'channels_redis.core.RedisChannelLayer',\r\n        'CONFIG': {\r\n            # \"hosts\": [configuration.REDIS_URL],\r\n            \"hosts\": [('127.0.0.1', 6379)],\r\n        },\r\n    },\r\n}\r\n\r\nCACHES = {\r\n    \"default\": {\r\n        \"BACKEND\": \"django_redis.cache.RedisCache\",\r\n        \"LOCATION\": \"redis://127.0.0.1:6379/1\",\r\n        \"OPTIONS\": {\r\n            \"CLIENT_CLASS\": \"django_redis.client.DefaultClient\",\r\n        }\r\n    }\r\n}\r\n\r\nSESSION_ENGINE = \"django.contrib.sessions.backends.cache\"\r\nSESSION_CACHE_ALIAS = \"default\"\r\n\r\nSIMPLE_JWT = {\r\n    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),\r\n    'REFRESH_TOKEN_LIFETIME': timedelta(days=3),\r\n    'ROTATE_REFRESH_TOKENS': True,\r\n    'BLACKLIST_AFTER_ROTATION': False,\r\n    'UPDATE_LAST_LOGIN': False,\r\n\r\n    'ALGORITHM': 'HS256',\r\n    'SIGNING_KEY': SECRET_KEY,\r\n    'VERIFYING_KEY': None,\r\n    'AUDIENCE': None,\r\n    'ISSUER': None,\r\n    'JWK_URL': None,\r\n    'LEEWAY': 0,\r\n\r\n    'AUTH_HEADER_TYPES': ('Bearer',),\r\n    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',\r\n    'USER_ID_FIELD': 'id',\r\n    'USER_ID_CLAIM': 'user_id',\r\n    'USER_AUTHENTICATION_RULE': 'rest_framework_simplejwt.authentication.default_user_authentication_rule',\r\n\r\n    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),\r\n    'TOKEN_TYPE_CLAIM': 'token_type',\r\n    'TOKEN_USER_CLASS': 'rest_framework_simplejwt.models.TokenUser',\r\n\r\n    'JTI_CLAIM': 'jti',\r\n\r\n    'SLIDING_TOKEN_REFRESH_EXP_CLAIM': 'refresh_exp',\r\n    'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),\r\n    'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),\r\n}\r\n\r\n# Database\r\n# https://docs.djangoproject.com/en/3.2/ref/settings/#databases\r\n\r\nDATABASES = {\r\n\r\n    'default': {\r\n\r\n        'ENGINE': 'django.db.backends.postgresql_psycopg2',\r\n\r\n        'NAME': configuration.DATABASE_NAME,\r\n\r\n        'USER': configuration.DATABASE_USER,\r\n\r\n        'PASSWORD': configuration.DATABASE_PASSWORD,\r\n\r\n        'HOST': configuration.DATABASE_HOST,\r\n\r\n        'PORT': configuration.DATABASE_PORT,\r\n\r\n    }\r\n\r\n}\r\n\r\n# import dj_database_url\r\n#\r\n# db_from_env = dj_database_url.config(conn_max_age=600)\r\n# DATABASES['default'].update(db_from_env)\r\n\r\n\r\n# Password validation\r\n# https://docs.djangoproject.com/en/3.2/ref/settings/#auth-password-validators\r\n\r\nAUTH_PASSWORD_VALIDATORS = [\r\n    {\r\n        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',\r\n    },\r\n    {\r\n        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',\r\n    },\r\n    {\r\n        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',\r\n    },\r\n    {\r\n        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',\r\n    },\r\n]\r\n\r\n# Internationalization\r\n# https://docs.djangoproject.com/en/3.2/topics/i18n/\r\n\r\nLANGUAGE_CODE = 'en-us'\r\n\r\nTIME_ZONE = 'UTC'\r\n\r\nUSE_I18N = True\r\n\r\nUSE_L10N = True\r\n\r\nUSE_TZ = True\r\n\r\n# Static files (CSS, JavaScript, Images)\r\n# https://docs.djangoproject.com/en/3.2/howto/static-files/\r\n\r\nSTATIC_URL = '/static/'\r\nSTATIC_ROOT = os.path.join(BASE_DIR, 'static')\r\n\r\n# Default primary key field type\r\n# https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field\r\n\r\nDEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'\r\n\r\nMEDIA_ROOT = os.path.join(BASE_DIR, 'media')\r\nMEDIA_URL = '/media/'\r\n\r\nLOCAL_SERVE_MEDIA_FILES = True\r\n\r\n# from decouple import config\r\n# S3_ENABLED = config('S3_ENABLED', cast=bool, default=True)\r\n# LOCAL_SERVE_MEDIA_FILES = config('LOCAL_SERVE_MEDIA_FILES', cast=bool, default=not S3_ENABLED)\r\n# LOCAL_SERVE_STATIC_FILES = config('LOCAL_SERVE_STATIC_FILES', cast=bool, default=not S3_ENABLED)\r\n#\r\n# if (not LOCAL_SERVE_MEDIA_FILES or not LOCAL_SERVE_STATIC_FILES) and not S3_ENABLED:\r\n#     raise ValueError('S3_ENABLED must be true if either media or static files are not served locally')\r\n#\r\n# if S3_ENABLED:\r\n#     AWS_ACCESS_KEY_ID = config('BUCKETEER_AWS_ACCESS_KEY_ID')\r\n#     AWS_SECRET_ACCESS_KEY = config('BUCKETEER_AWS_SECRET_ACCESS_KEY')\r\n#     AWS_STORAGE_BUCKET_NAME = config('BUCKETEER_BUCKET_NAME')\r\n#     AWS_S3_REGION_NAME = config('BUCKETEER_AWS_REGION')\r\n#     AWS_DEFAULT_ACL = None\r\n#     AWS_S3_SIGNATURE_VERSION = config('S3_SIGNATURE_VERSION', default='s3v4')\r\n#     AWS_S3_ENDPOINT_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'\r\n#     AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}\r\n#\r\n# if not LOCAL_SERVE_STATIC_FILES:\r\n#     STATIC_DEFAULT_ACL = 'public-read'\r\n#     STATIC_LOCATION = 'static'\r\n#     STATIC_URL = f'{AWS_S3_ENDPOINT_URL}/{STATIC_LOCATION}/'\r\n#     STATICFILES_STORAGE = 'sylvest_django.storage_backends.StaticStorage'\r\n#\r\n# if not LOCAL_SERVE_MEDIA_FILES:\r\n#     PUBLIC_MEDIA_DEFAULT_ACL = 'public-read'\r\n#     PUBLIC_MEDIA_LOCATION = 'media/public'\r\n#\r\n#     MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{PUBLIC_MEDIA_LOCATION}/'\r\n#     DEFAULT_FILE_STORAGE = 'sylvest_django.storage_backends.PublicMediaStorage'\r\n#\r\n#     PRIVATE_MEDIA_DEFAULT_ACL = 'private'\r\n#     PRIVATE_MEDIA_LOCATION = 'media/private'\r\n#     PRIVATE_FILE_STORAGE = 'sylvest_django.storage_backends.PrivateMediaStorage'\r\n\r\nLOGIN_URL = 'login'\r\nACCOUNT_INACTIVE = 'account_inactive'\r\n\r\nLOCATION_FIELD = {\r\n    'provider.google.api': '//maps.google.com/maps/api/js?sensor=false',\r\n    'provider.google.api_key': 'AIzaSyCdxdwsjTIu623G0WHYF9ZJQvrJt3Xy4hY',\r\n    'provider.google.api_libraries': '',\r\n    'provider.google.map.type': 'ROADMAP',\r\n}\r\n\r\n# import django_heroku\r\n# django_heroku.settings(locals())\r\n# DATABASES['default']['CONN_MAX_AGE'] = 0\r\n\r\nCELERY_BROKER_URL = 'redis://localhost:6379'\r\nCELERY_RESULT_BACKEND = 'redis://localhost:6379'\r\nCELERY_ACCEPT_CONTENT = ['application/json']\r\nCELERY_TASK_SERIALIZER = 'json'\r\nCELERY_RESULT_SERIALIZER = 'json'\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/sylvest_django/settings.py b/sylvest_django/settings.py
+--- a/sylvest_django/settings.py	(revision 955b6e3759185a9ab76baba4e482223b5efcc1fe)
++++ b/sylvest_django/settings.py	(date 1665430690901)
+@@ -82,14 +82,14 @@
+     # 'PAGE_SIZE': 100
+ }
+ 
+-# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+-EMAIL_HOST = 'smtp.gmail.com'
+-EMAIL_PORT = 587
+-EMAIL_USE_TLS = True
+-EMAIL_HOST_USER = "sylvestapp@gmail.com"
+-EMAIL_HOST_PASSWORD = "scfnfawdrkjdwxzt"
+-DEFAULT_FROM_EMAIL = 'noreply<no_reply@domain.com>'
++EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
++# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
++# EMAIL_HOST = 'smtp.gmail.com'
++# EMAIL_PORT = 587
++# EMAIL_USE_TLS = True
++# EMAIL_HOST_USER = "sylvestapp@gmail.com"
++# EMAIL_HOST_PASSWORD = "scfnfawdrkjdwxzt"
++# DEFAULT_FROM_EMAIL = 'noreply<no_reply@domain.com>'
+ 
+ REST_USE_JWT = True
+ JWT_AUTH_COOKIE = 'auth'
+@@ -131,7 +131,7 @@
+ ASGI_APPLICATION = 'sylvest_django.asgi.application'
+ WSGI_APPLICATION = 'sylvest_django.wsgi.application'
+ 
+-FIREBASE_CREDENTIALS = firebase_admin.credentials.Certificate(r"./sylvestFirebase.json")
++FIREBASE_CREDENTIALS = firebase_admin.credentials.Certificate(os.path.join(BASE_DIR, 'sylvestFirebase.json'))
+ FIREBASE_APP = firebase_admin.initialize_app(FIREBASE_CREDENTIALS)
+ 
+ FCM_DJANGO_SETTINGS = {
+Index: stress_tests/collections/post_titles
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/collections/post_titles b/stress_tests/collections/post_titles
+new file mode 100644
+--- /dev/null	(date 1665414332166)
++++ b/stress_tests/collections/post_titles	(date 1665414332166)
+@@ -0,0 +1,38 @@
++Why Is Gaming Considered Underrated?
++This Year Will Be The Year of Gaming
++Seven Questions To Ask At Gaming
++Seven Things That Happen When You Are In Gaming
++10 Reasons Why You Shouldn't Rely On Gaming Anymore
++7 Top Reasons Why You Face Obstacles In Learning Gaming
++You Should Experience Gaming At Least Once In Your Lifetime And Here's Why.
++Is Gaming The Most Trending Thing Now?
++What's So Trendy About Gaming That Everyone Went Crazy Over It?
++10 Doubts You Should Clarify About Gaming
++7 Things Your Boss Needs To Know About Fitness
++Top Five Trends In Fitness To Watch
++The Rank Of Fitness In Consumer's Market
++The 7 Reasons Tourists Love Fitness
++The Seven Secrets About Fitness Only A Handful Of People Know
++7 Things You Didn't Know About Fitness
++10 Factors That Affect Fitness's Longevity
++Seven Places That You Can Find Fitness
++Five Awesome Things You Can Learn From Fitness
++The Ultimate Revelation Of Fitness
++How To Have A Fantastic Tourism With Minimal Spending
++5 Great Tourism Ideas That You Can Share With Your Friends
++10 Difficult Things About Tourism
++10 Precious Tips To Help You Get Better At Tourism
++Is Tourism Still Relevant?
++Ten Ways Tourism Can Improve Your Business
++Most Effective Ways To Overcome Tourism's Problem
++The Cheapest Way To Earn Your Free Ticket To Tourism
++The Rank Of Tourism In Consumer's Market
++This Year Will Be The Year of Tourism
++I Spent $100 every day for 2 Weeks (and here's what happened)
++Why All Rich People are Evil
++No you don't need to Work Long Hours to Make Money Online
++Yes you DO need to Work Long Hours to Make Money Online
++QUIZ: what type of Entrepreneur are you?
++QUIZ: which Entrepreneur are you?
++We can help you Make Money Online
++Can you spot these problems with Building Wealth?
+\ No newline at end of file
+Index: stress_tests/generators/community_generator.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/stress_tests/generators/community_generator.py b/stress_tests/generators/community_generator.py
+new file mode 100644
+--- /dev/null	(date 1665432287509)
++++ b/stress_tests/generators/community_generator.py	(date 1665432287509)
+@@ -0,0 +1,52 @@
++from subjects.models import Community
++from recommender.models import RoledUser
++from django.core.files.base import ContentFile
++from django.contrib.auth.models import User
++
++from stress_tests.generators.content_generator import ModelGenerator
++from stress_tests.generators.random_generators import RandomFilePicker, RandomNameGenerator
++
++
++class CommunityGenerator(ModelGenerator):
++    __name_generator: RandomNameGenerator
++    __info_generator: RandomNameGenerator
++    __file_generator: RandomFilePicker
++
++    def __init__(self):
++        self.__name_generator = RandomNameGenerator(r"collections/community_titles")
++        self.__info_generator = RandomNameGenerator(r"collections/lorem_ipsum")
++        self.__file_generator = RandomFilePicker(r"collections/photos")
++        super(CommunityGenerator, self).__init__(Community)
++
++    def generate(self, number: int, **kwargs) -> list[Community]:
++        generated: list[Community] = []
++        admin = kwargs.get("admin", User.objects.all().first())
++        for i in range(number):
++            title = f"{self.__name_generator.get_item()}{self.last_id}"
++            info = self.__info_generator.get_item()
++            community: Community = Community.objects.create(
++                title=title,
++                about=info,
++                short_description=title
++            )
++            self.last_id += 1
++
++            RoledUser.objects.create(
++                user=admin,
++                community=community,
++                privilege=RoledUser.Roles.admin
++            )
++
++            with open(self.__file_generator.get_item(), "rb") as f:
++                community.image.save(
++                    name=f"{community}profile{i}.png",
++                    content=ContentFile(f.read())
++                )
++            with open(self.__file_generator.get_item(), "rb") as f:
++                community.banner.save(
++                    name=f"{community}banner{i}.png",
++                    content=ContentFile(f.read())
++                )
++            print(f"generated {i}: {community}")
++            generated.append(community)
++        return generated

@@ -1,0 +1,7 @@
+Hello, {{ username }}.
+This mail has been sent to you in order to verify your email address. If this is not you, please ignore the message.
+
+In order to verify your acount, click here: {{ verification_url }}
+
+Thank you and regards,
+Sylvest team

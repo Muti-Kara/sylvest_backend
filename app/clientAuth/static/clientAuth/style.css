@@ -1,0 +1,11 @@
+@import url('https://fonts.googleapis.com/css2?family=Lato:wght@300&family=Quicksand:wght@500&display=swap');
+
+.main-title {
+    font-family: 'Quciksand';
+    color: rgb(153, 45, 45);
+}
+
+body {
+    background-color: rgb(153, 45, 45);
+}
+

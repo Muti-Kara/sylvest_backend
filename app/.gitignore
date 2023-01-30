@@ -1,0 +1,8 @@
+sylvest_flutter/build/
+sylvest_flutter/.dart_tool/
+sylvest_flutter/.flutter-plugins
+sylvest_flutter/.flutter-plugins-dependencies
+sylvest_flutter/.packages
+__pycache__
+.env
+venv/
